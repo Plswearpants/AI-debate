@@ -25,7 +25,8 @@ class FactCheckerAgent(Agent):
         name: str,
         team: str,
         file_manager,
-        config
+        config,
+        raw_data_logger=None
     ):
         """
         Initialize fact-checker agent.
@@ -35,17 +36,29 @@ class FactCheckerAgent(Agent):
             team: Team identifier ("a" or "b")
             file_manager: FileManager instance
             config: Configuration object
+            raw_data_logger: Optional RawDataLogger for logging all model calls
         """
         super().__init__(name, "factchecker", file_manager)
         self.team = team
         self.opponent_team = 'b' if team == 'a' else 'a'
         self.config = config
         
-        # Initialize Perplexity client
-        self.perplexity = PerplexityClient(
-            api_key=config.perplexity_api_key,
-            model=config.perplexity_model
-        )
+        # Initialize client based on configuration
+        if config.openrouter_api_key:
+            # Use OpenRouter
+            from src.clients.openrouter_client import OpenRouterClient, create_perplexity_adapter
+            openrouter_client = OpenRouterClient(api_key=config.openrouter_api_key, raw_data_logger=raw_data_logger)
+            self.perplexity = create_perplexity_adapter(openrouter_client, config.perplexity_model, agent_name=f"factchecker_{team}")
+        elif config.perplexity_api_key:
+            # Use direct Perplexity API
+            self.perplexity = PerplexityClient(
+                api_key=config.perplexity_api_key,
+                model=config.perplexity_model
+            )
+        else:
+            raise ValueError(
+                "FactChecker requires either OPENROUTER_API_KEY or PERPLEXITY_API_KEY"
+            )
     
     async def execute_turn(self, context: AgentContext) -> AgentResponse:
         """
@@ -192,7 +205,8 @@ Return JSON with scores (1-10) and comment."""
         
         # Parse JSON response
         try:
-            verification = json.loads(response)
+            from src.utils.json_parser import parse_json_response
+            verification = parse_json_response(response)
             
             # Add metadata
             verification["verified_by"] = self.name

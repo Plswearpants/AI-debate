@@ -102,11 +102,14 @@ class TestConfigFromEnv:
     
     def test_from_env_missing_required_keys(self, monkeypatch):
         """Test that missing required keys raises error."""
-        # Clear all relevant env vars
-        for key in ["GEMINI_API_KEY", "CLAUDE_API_KEY", "PERPLEXITY_API_KEY", "LAMBDA_GPU_ENDPOINT"]:
+        # Mock load_dotenv to do nothing (prevent loading from .env file)
+        monkeypatch.setattr("src.config.load_dotenv", lambda *args, **kwargs: None)
+        
+        # Clear all relevant env vars (both OpenRouter and Direct APIs)
+        for key in ["OPENROUTER_API_KEY", "GEMINI_API_KEY", "CLAUDE_API_KEY", "PERPLEXITY_API_KEY", "LAMBDA_GPU_ENDPOINT"]:
             monkeypatch.delenv(key, raising=False)
         
-        with pytest.raises(ValueError, match="Missing required environment variables"):
+        with pytest.raises(ValueError, match="Missing API configuration"):
             Config.from_env()
     
     def test_from_env_with_all_keys(self, monkeypatch):

@@ -28,6 +28,8 @@ from src.agents.judge import JudgeAgent
 from src.config import Config
 from src.utils.file_manager import FileManager
 from src.utils.state_manager import DebatePhase, DebateState
+from src.utils.debate_logger import DebateLogger
+from src.utils.raw_data_logger import RawDataLogger
 
 
 class DebateModerator:
@@ -60,6 +62,10 @@ class DebateModerator:
         self.debate_dir = Path(f"debates/{self.debate_id}")
         self.file_manager = FileManager(str(self.debate_dir))
         
+        # Initialize loggers
+        self.logger = DebateLogger(self.debate_id, self.debate_dir)
+        self.raw_data_logger = RawDataLogger(self.debate_id, str(self.debate_dir))
+        
         # Initialize state
         self.state = DebateState(self.debate_id, topic)
         
@@ -90,14 +96,41 @@ class DebateModerator:
         print(f"Debate ID: {self.debate_id}")
         print(f"{'='*60}\n")
         
+        self.logger.log_moderator_action(
+            action="debate_started",
+            details={
+                "topic": self.topic,
+                "debate_id": self.debate_id,
+                "config": {
+                    "num_rounds": self.config.num_debate_rounds,
+                    "crowd_size": self.config.crowd_size
+                }
+            }
+        )
+        
         try:
-            # Execute all phases
-            await self._phase_0_initialization()
-            await self._phase_1_opening()
-            await self._phase_2_debate_rounds()
-            await self._phase_3_closing()
+            # Execute phases based on current state
+            # Skip phases that have already been completed (for resume)
+            phase_order = ["initialization", "opening", "debate_rounds", "closing", "completed"]
+            current_phase_index = phase_order.index(self.state.phase.value)
             
-            # Generate outputs
+            # Phase 0: Initialization
+            if current_phase_index < 1:
+                await self._phase_0_initialization()
+            
+            # Phase 1: Opening
+            if current_phase_index < 2:
+                await self._phase_1_opening()
+            
+            # Phase 2: Debate Rounds
+            if current_phase_index < 3:
+                await self._phase_2_debate_rounds()
+            
+            # Phase 3: Closing
+            if current_phase_index < 4:
+                await self._phase_3_closing()
+            
+            # Generate outputs (always run if phase is completed)
             await self._generate_outputs()
             
             print(f"\n{'='*60}")
@@ -162,6 +195,11 @@ class DebateModerator:
         # Reinitialize managers and agents
         moderator.debate_dir = Path(f"debates/{debate_id}")
         moderator.file_manager = FileManager(str(moderator.debate_dir))
+        
+        # Initialize loggers
+        moderator.logger = DebateLogger(moderator.debate_id, moderator.debate_dir)
+        moderator.raw_data_logger = RawDataLogger(moderator.debate_id, str(moderator.debate_dir))
+        
         moderator.agents = moderator._initialize_agents(
             team_a_stance=checkpoint["state"]["team_assignments"]["team_a"]["stance"],
             team_b_stance=checkpoint["state"]["team_assignments"]["team_b"]["stance"]
@@ -206,7 +244,8 @@ class DebateModerator:
         temp_crowd = CrowdAgent(
             name="crowd",
             file_manager=self.file_manager,
-            config=self.config
+            config=self.config,
+            raw_data_logger=self.raw_data_logger
         )
         
         vote_zero_context = AgentContext(
@@ -247,6 +286,17 @@ class DebateModerator:
             vote_results={"for": for_count, "against": against_count}
         )
         
+        # Log Vote 0 results
+        self.logger.log_moderator_action(
+            action="vote_0_completed",
+            details={
+                "for_count": for_count,
+                "against_count": against_count,
+                "average_score": avg_score,
+                "team_assignments": self.state.team_assignments
+            }
+        )
+        
         print(f"   Team A: {self.state.team_assignments['team_a']['stance'].upper()}")
         print(f"   Team B: {self.state.team_assignments['team_b']['stance'].upper()}")
         
@@ -271,6 +321,11 @@ class DebateModerator:
         
         # 7. Transition to opening
         self.state.transition_to(DebatePhase.OPENING)
+        self.logger.log_moderator_action(
+            action="phase_transition",
+            details={"from": "initialization", "to": "opening"},
+            state_snapshot=self.state.to_dict()
+        )
         print(f"\n✅ Phase 0 complete\n")
     
     async def _phase_1_opening(self) -> None:
@@ -335,6 +390,11 @@ class DebateModerator:
         
         # Transition to debate rounds
         self.state.transition_to(DebatePhase.DEBATE_ROUNDS)
+        self.logger.log_moderator_action(
+            action="phase_transition",
+            details={"from": "opening", "to": "debate_rounds"},
+            state_snapshot=self.state.to_dict()
+        )
         print(f"\n✅ Phase 1 complete\n")
     
     async def _phase_2_debate_rounds(self) -> None:
@@ -407,6 +467,11 @@ class DebateModerator:
         
         # Transition to closing
         self.state.transition_to(DebatePhase.CLOSING)
+        self.logger.log_moderator_action(
+            action="phase_transition",
+            details={"from": "debate_rounds", "to": "closing"},
+            state_snapshot=self.state.to_dict()
+        )
         print(f"\n✅ Phase 2 complete\n")
     
     async def _phase_3_closing(self) -> None:
@@ -469,6 +534,11 @@ class DebateModerator:
         
         # Mark as completed
         self.state.transition_to(DebatePhase.COMPLETED)
+        self.logger.log_moderator_action(
+            action="phase_transition",
+            details={"from": "closing", "to": "completed"},
+            state_snapshot=self.state.to_dict()
+        )
         self._save_checkpoint()
         
         print(f"\n✅ Phase 3 complete\n")
@@ -525,12 +595,42 @@ class DebateModerator:
             response = await agent.execute_turn(context)
         except Exception as e:
             print(f"❌ {agent_name} threw exception: {e}")
+            self.logger.log_error(
+                error_type="agent_exception",
+                message=str(e),
+                context={"agent": agent_name, "phase": context.phase, "round": context.round_number}
+            )
             raise
         
         if not response.success:
             error_msg = ", ".join(response.errors)
             print(f"❌ {agent_name} failed: {error_msg}")
+            self.logger.log_error(
+                error_type="agent_failure",
+                message=error_msg,
+                context={"agent": agent_name, "phase": context.phase, "round": context.round_number}
+            )
             raise Exception(f"Agent {agent_name} failed: {error_msg}")
+        
+        # Log agent turn
+        self.logger.log_agent_turn(
+            agent_name=agent_name,
+            agent_role=agent.role,
+            phase=context.phase,
+            round_number=context.round_number,
+            context={
+                "topic": context.topic,
+                "instructions": context.instructions,
+                "current_state": context.current_state
+            },
+            response={
+                "success": response.success,
+                "output": response.output,
+                "file_updates": [u.__dict__ if hasattr(u, '__dict__') else str(u) for u in response.file_updates],
+                "metadata": response.metadata
+            },
+            errors=response.errors if not response.success else None
+        )
         
         # Apply file updates
         for update in response.file_updates:
@@ -573,6 +673,13 @@ class DebateModerator:
         Args:
             update: FileUpdate object from agent
         """
+        # Log file update
+        self.logger.log_file_update(
+            file_type=update.file_type,
+            operation=update.operation.name,
+            data=update.data
+        )
+        
         if update.operation == FileUpdateOperation.APPEND_TURN:
             # Add turn to history_chat
             speaker = update.data.get("speaker")
@@ -607,6 +714,10 @@ class DebateModerator:
             if "vote_rounds" not in data:
                 data["vote_rounds"] = []
             
+            # Initialize voters list if it doesn't exist
+            if "voters" not in data:
+                data["voters"] = []
+            
             # Update voter records
             for vote in vote_round["votes"]:
                 voter_id = vote["voter_id"]
@@ -622,12 +733,24 @@ class DebateModerator:
                     voter["voting_history"].append({
                         "round": vote_round["round"],
                         "score": vote["score"],
-                        "rationale": vote["rationale"]
+                        "rationale": vote.get("rationale", vote.get("reasoning", ""))
                     })
                     voter["current_score"] = vote["score"]
                 else:
-                    # Should not happen if Vote 0 worked correctly
-                    print(f"⚠️  Warning: Voter {voter_id} not found")
+                    # Create new voter (happens in Vote 0 or if voter was missing)
+                    new_voter = {
+                        "voter_id": voter_id,
+                        "persona": vote.get("persona", "Unknown"),
+                        "persona_description": vote.get("persona_description", ""),  # System prompt
+                        "persona_type": vote.get("persona_type", "unknown"),  # political, professional, etc.
+                        "voting_history": [{
+                            "round": vote_round["round"],
+                            "score": vote["score"],
+                            "rationale": vote.get("rationale", vote.get("reasoning", ""))
+                        }],
+                        "current_score": vote["score"]
+                    }
+                    data["voters"].append(new_voter)
             
             # Add round summary
             data["vote_rounds"].append({
@@ -660,36 +783,42 @@ class DebateModerator:
                 team="a",
                 stance=team_a_stance,
                 file_manager=self.file_manager,
-                config=self.config
+                config=self.config,
+                raw_data_logger=self.raw_data_logger
             ),
             "debator_b": DebatorAgent(
                 name="debator_b",
                 team="b",
                 stance=team_b_stance,
                 file_manager=self.file_manager,
-                config=self.config
+                config=self.config,
+                raw_data_logger=self.raw_data_logger
             ),
             "factchecker_a": FactCheckerAgent(
                 name="factchecker_a",
                 team="a",
                 file_manager=self.file_manager,
-                config=self.config
+                config=self.config,
+                raw_data_logger=self.raw_data_logger
             ),
             "factchecker_b": FactCheckerAgent(
                 name="factchecker_b",
                 team="b",
                 file_manager=self.file_manager,
-                config=self.config
+                config=self.config,
+                raw_data_logger=self.raw_data_logger
             ),
             "judge": JudgeAgent(
                 name="judge",
                 file_manager=self.file_manager,
-                config=self.config
+                config=self.config,
+                raw_data_logger=self.raw_data_logger
             ),
             "crowd": CrowdAgent(
                 name="crowd",
                 file_manager=self.file_manager,
-                config=self.config
+                config=self.config,
+                raw_data_logger=self.raw_data_logger
             )
         }
         
@@ -732,6 +861,17 @@ class DebateModerator:
         checkpoint_path = self.debate_dir / "moderator_checkpoint.json"
         with open(checkpoint_path, 'w') as f:
             json.dump(checkpoint, f, indent=2)
+        
+        # Log checkpoint save
+        self.logger.log_moderator_action(
+            action="checkpoint_saved",
+            details={
+                "phase": self.state.phase.value,
+                "round": self.state.round_number,
+                "turn_count": self.state.turn_count,
+                "total_cost": self.total_cost
+            }
+        )
     
     def _should_checkpoint(self, agent_name: str, context_params: Dict[str, Any]) -> bool:
         """
@@ -897,7 +1037,7 @@ class DebateModerator:
                     f"{vote_record['round']},"
                     f"{voter['voter_id']},"
                     f"{vote_record['score']},"
-                    f"{voter['persona']['type']}"
+                    f"{voter['persona_type']}"
                 )
         
         csv_path = output_dir / "voter_sentiment_graph.csv"

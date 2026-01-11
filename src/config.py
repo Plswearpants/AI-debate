@@ -19,11 +19,15 @@ from src.utils.cost_controls import CostBudget
 class Config:
     """Configuration for the AI Debate Platform."""
     
-    # API Keys
-    gemini_api_key: str
-    claude_api_key: str
-    perplexity_api_key: str
-    lambda_gpu_endpoint: str
+    # API Keys - OpenRouter (recommended) OR Direct APIs
+    openrouter_api_key: Optional[str] = None
+    use_openrouter_for_crowd: bool = False
+    
+    # Direct API Keys (optional if using OpenRouter)
+    gemini_api_key: Optional[str] = None
+    claude_api_key: Optional[str] = None
+    perplexity_api_key: Optional[str] = None
+    lambda_gpu_endpoint: Optional[str] = None
     lambda_gpu_api_key: Optional[str] = None
     
     # Debate Settings
@@ -46,7 +50,7 @@ class Config:
     max_tokens_debator: int = 4096
     max_tokens_judge: int = 2048
     max_tokens_factchecker: int = 1024
-    max_tokens_crowd: int = 100
+    max_tokens_crowd: int = 1024
     
     # Logging
     log_level: str = "INFO"
@@ -74,19 +78,27 @@ class Config:
         else:
             load_dotenv()
         
-        # Required keys
-        required_keys = [
-            "GEMINI_API_KEY",
-            "CLAUDE_API_KEY",
-            "PERPLEXITY_API_KEY",
-            "LAMBDA_GPU_ENDPOINT"
-        ]
+        # Check for OpenRouter OR Direct APIs
+        openrouter_key = os.getenv("OPENROUTER_API_KEY")
+        gemini_key = os.getenv("GEMINI_API_KEY")
+        claude_key = os.getenv("CLAUDE_API_KEY")
+        perplexity_key = os.getenv("PERPLEXITY_API_KEY")
+        lambda_endpoint = os.getenv("LAMBDA_GPU_ENDPOINT")
         
-        missing_keys = [key for key in required_keys if not os.getenv(key)]
-        if missing_keys:
+        # Validate: Must have either OpenRouter OR all direct APIs
+        has_openrouter = bool(openrouter_key)
+        has_direct_apis = all([gemini_key, claude_key, perplexity_key])
+        
+        if not has_openrouter and not has_direct_apis:
             raise ValueError(
-                f"Missing required environment variables: {', '.join(missing_keys)}. "
-                f"Please create a .env file based on env.example"
+                "Missing API configuration. Please choose ONE option:\n\n"
+                "Option A (Recommended): OpenRouter\n"
+                "  - Set OPENROUTER_API_KEY in .env\n"
+                "  - Get key from: https://openrouter.ai/keys\n\n"
+                "Option B (Advanced): Direct APIs\n"
+                "  - Set GEMINI_API_KEY, CLAUDE_API_KEY, PERPLEXITY_API_KEY\n"
+                "  - Requires multiple provider accounts\n\n"
+                "See DEPLOYMENT_GUIDE.md for setup instructions."
             )
         
         # Get cost budget preset
@@ -99,14 +111,33 @@ class Config:
             cost_budget = CostBudget.balanced()
         
         return cls(
-            gemini_api_key=os.getenv("GEMINI_API_KEY"),
-            claude_api_key=os.getenv("CLAUDE_API_KEY"),
-            perplexity_api_key=os.getenv("PERPLEXITY_API_KEY"),
-            lambda_gpu_endpoint=os.getenv("LAMBDA_GPU_ENDPOINT"),
+            # OpenRouter or Direct APIs
+            openrouter_api_key=openrouter_key,
+            use_openrouter_for_crowd=os.getenv("USE_OPENROUTER_FOR_CROWD", "false").lower() == "true",
+            gemini_api_key=gemini_key,
+            claude_api_key=claude_key,
+            perplexity_api_key=perplexity_key,
+            lambda_gpu_endpoint=lambda_endpoint,
             lambda_gpu_api_key=os.getenv("LAMBDA_GPU_API_KEY"),
+            # Debate settings
             num_debate_rounds=int(os.getenv("NUM_DEBATE_ROUNDS", "2")),
             crowd_size=int(os.getenv("CROWD_SIZE", "100")),
             resource_multiplier_threshold=float(os.getenv("RESOURCE_MULTIPLIER_THRESHOLD", "0.6")),
+            # Model settings (work for both OpenRouter and Direct APIs)
+            gemini_model=os.getenv("GEMINI_MODEL", "gemini-1.5-pro"),
+            claude_model=os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-20241022"),
+            perplexity_model=os.getenv("PERPLEXITY_MODEL", "sonar-pro"),
+            lambda_model=os.getenv("LAMBDA_MODEL", "meta-llama/Llama-3.1-8B-Instruct"),
+            # Generation settings
+            gemini_temperature=float(os.getenv("GEMINI_TEMPERATURE", "0.7")),
+            claude_temperature=float(os.getenv("CLAUDE_TEMPERATURE", "0.3")),
+            perplexity_temperature=float(os.getenv("PERPLEXITY_TEMPERATURE", "0.2")),
+            crowd_temperature=float(os.getenv("CROWD_TEMPERATURE", "0.8")),
+            max_tokens_debator=int(os.getenv("MAX_TOKENS_DEBATOR", "4096")),
+            max_tokens_judge=int(os.getenv("MAX_TOKENS_JUDGE", "2048")),
+            max_tokens_factchecker=int(os.getenv("MAX_TOKENS_FACTCHECKER", "1024")),
+            max_tokens_crowd=int(os.getenv("MAX_TOKENS_CROWD", "100")),
+            # Other settings
             log_level=os.getenv("LOG_LEVEL", "INFO"),
             cost_budget=cost_budget,
             cost_budget_preset=budget_preset
@@ -121,6 +152,8 @@ class Config:
             Config instance for testing
         """
         return cls(
+            openrouter_api_key=None,  # Tests use direct APIs
+            use_openrouter_for_crowd=False,
             gemini_api_key="test_gemini_key",
             claude_api_key="test_claude_key",
             perplexity_api_key="test_perplexity_key",

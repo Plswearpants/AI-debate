@@ -5,7 +5,7 @@ Uses: Lambda GPU (Llama 3.1 8B) for batch inference
 Responsibilities:
 - Maintain 100 diverse personas (political, professional, demographic)
 - Vote 0: Vote on stance preference (determines team assignments)
-- Vote 1+: Vote on debate performance (0-100 scale, team-based)
+- Vote 1+: Vote on debate performance (1-100 scale: 1-50 = AGAINST/Team b, 51-100 = FOR/Team a)
 - Track opinion shifts over rounds
 - Update crowd_opinion.json
 """
@@ -26,7 +26,8 @@ class CrowdAgent(Agent):
         self,
         name: str,
         file_manager,
-        config
+        config,
+        raw_data_logger=None
     ):
         """
         Initialize crowd agent.
@@ -35,15 +36,29 @@ class CrowdAgent(Agent):
             name: Agent name ("crowd")
             file_manager: FileManager instance
             config: Configuration object
+            raw_data_logger: Optional RawDataLogger for logging all model calls
         """
         super().__init__(name, "crowd", file_manager)
         self.config = config
         
-        # Initialize Lambda GPU client
-        self.lambda_client = LambdaGPUClient(
-            endpoint=config.lambda_gpu_endpoint,
-            api_key=config.lambda_gpu_api_key
-        )
+        # Initialize client based on configuration
+        if config.use_openrouter_for_crowd and config.openrouter_api_key:
+            # Use OpenRouter for crowd voting
+            from src.clients.openrouter_client import OpenRouterClient, create_lambda_adapter
+            openrouter_client = OpenRouterClient(api_key=config.openrouter_api_key, raw_data_logger=raw_data_logger)
+            self.lambda_client = create_lambda_adapter(openrouter_client, config.lambda_model, agent_name="crowd")
+        elif config.lambda_gpu_endpoint:
+            # Use Lambda GPU
+            self.lambda_client = LambdaGPUClient(
+                endpoint=config.lambda_gpu_endpoint,
+                api_key=config.lambda_gpu_api_key
+            )
+        else:
+            raise ValueError(
+                "Crowd agent requires either:\n"
+                "  - OPENROUTER_API_KEY + USE_OPENROUTER_FOR_CROWD=true, OR\n"
+                "  - LAMBDA_GPU_ENDPOINT (for direct Lambda GPU)"
+            )
         
         # Load personas
         self.personas = self._load_personas(config.crowd_size)
@@ -176,14 +191,21 @@ Team b's argument:
 
 Based on your perspective as a {persona['name']}, rate how convinced you are by the overall debate so far.
 
-Score: 0-100
-- 0-20: Strongly favor Team b
-- 20-40: Moderately favor Team b
-- 40-60: Neutral/undecided
-- 60-80: Moderately favor Team a
-- 80-100: Strongly favor Team a
+**SCORING SCHEME (1-100):**
+• 1-50: FAVOR Team b (you think Team b is winning)
+  - 1-25: Strongly favor Team b
+  - 26-50: Moderately favor Team b
+  
+• 51-100: FAVOR Team a (you think Team a is winning)
+  - 51-75: Moderately favor Team a
+  - 76-100: Strongly favor Team a
 
-Return JSON: {{"score": <0-100>, "reasoning": "<brief explanation>"}}"""
+**IMPORTANT:**
+- Scores 1-50 mean Team b is winning in your view
+- Scores 51-100 mean Team a is winning in your view
+- Score exactly 50 if you lean slightly toward Team b
+
+Return JSON: {{"score": <1-100>, "reasoning": "<brief explanation>"}}"""
         
         return prompt
     
@@ -210,19 +232,26 @@ Topic: {context.topic}
 
 This is the initial vote BEFORE any debate arguments. Based on your values and perspective as a {persona['name']}, what is your initial stance on this topic?
 
-Vote on your stance preference:
+Vote on your stance preference using this scoring scheme:
 
-Score: 0-100
-- 0-20: Strongly AGAINST (oppose the proposal)
-- 20-40: Moderately against
-- 40-60: Neutral/undecided
-- 60-80: Moderately FOR (support the proposal)
-- 80-100: Strongly FOR
+**SCORING SCHEME (1-100):**
+• 1-50: AGAINST the proposal (oppose it)
+  - 1-25: Strongly against
+  - 26-50: Moderately against
+  
+• 51-100: FOR the proposal (support it)
+  - 51-75: Moderately for
+  - 76-100: Strongly for
+
+**IMPORTANT:** 
+- Scores 1-50 mean you are AGAINST
+- Scores 51-100 mean you are FOR
+- Score exactly 50 if you lean slightly against
 
 This vote determines the baseline audience opinion before the debate begins.
 The side with more support will speak first as Team a.
 
-Return JSON: {{"score": <0-100>, "reasoning": "<brief explanation of your initial stance>"}}"""
+Return JSON: {{"score": <1-100>, "reasoning": "<brief explanation of your initial stance>"}}"""
         
         return prompt
     
@@ -237,26 +266,37 @@ Return JSON: {{"score": <0-100>, "reasoning": "<brief explanation of your initia
         Returns:
             Vote dictionary
         """
-        try:
-            # Try to parse as JSON
-            vote_data = json.loads(response)
-            score = vote_data.get("score", 50)
-            reasoning = vote_data.get("reasoning", "")
-        except json.JSONDecodeError:
-            # Fallback: extract score from text
-            import re
-            score_match = re.search(r'score[:\s]+(\d+)', response, re.IGNORECASE)
-            score = int(score_match.group(1)) if score_match else 50
-            reasoning = response[:100]
+        import re
+        from src.utils.json_parser import parse_json_response
         
-        # Clamp score to valid range
-        score = max(0, min(100, score))
+        try:
+            # Try to parse as JSON (handles markdown code blocks automatically)
+            vote_data = parse_json_response(response)
+            score = vote_data.get("score", 50)
+            reasoning = vote_data.get("reasoning", vote_data.get("rationale", ""))
+        except json.JSONDecodeError:
+            # Fallback: extract score from text using improved regex
+            score_match = re.search(r'"?score"?\s*[:\s]+(\d+)', response, re.IGNORECASE)
+            if score_match:
+                score = int(score_match.group(1))
+                reasoning = response[:200]
+            else:
+                # Last resort: try to find any number between 1-100
+                number_match = re.search(r'\b(\d{1,3})\b', response)
+                score = int(number_match.group(1)) if number_match else 50
+                reasoning = response[:200]
+                print(f"Warning: Could not parse vote JSON for {persona['id']}, using fallback score: {score}")
+        
+        # Clamp score to valid range (1-100, where 1-50 = AGAINST/Team b, 51-100 = FOR/Team a)
+        score = max(1, min(100, score))
         
         return {
             "voter_id": persona["id"],
             "persona": persona["name"],
+            "persona_description": persona["description"],  # System prompt/characteristics
+            "persona_type": persona["type"],  # political, professional, demographic, stakeholder
             "score": score,
-            "reasoning": reasoning[:200]  # Keep brief
+            "rationale": reasoning[:200]  # Moderator expects "rationale", not "reasoning"
         }
     
     def _create_crowd_update(
@@ -274,12 +314,17 @@ Return JSON: {{"score": <0-100>, "reasoning": "<brief explanation of your initia
         Returns:
             FileUpdate object
         """
+        # Calculate aggregate statistics
+        avg_score = sum(v["score"] for v in votes) / len(votes) if votes else 0
+        
         return FileUpdate(
             file_type="crowd_opinion",
             operation=FileUpdateOperation.ADD_CROWD_VOTE,
             data={
-                "round_number": round_number,
+                "round": round_number,  # Moderator expects "round", not "round_number"
                 "votes": votes,
+                "average_score": round(avg_score, 1),
+                "vote_count": len(votes),
                 "timestamp": datetime.now().isoformat()
             }
         )

@@ -31,7 +31,8 @@ class DebatorAgent(Agent):
         team: str,
         stance: str,
         file_manager,
-        config
+        config,
+        raw_data_logger=None
     ):
         """
         Initialize debator agent.
@@ -42,17 +43,29 @@ class DebatorAgent(Agent):
             stance: Stance description (e.g., "for", "against")
             file_manager: FileManager instance
             config: Configuration object
+            raw_data_logger: Optional RawDataLogger for logging all model calls
         """
         super().__init__(name, "debator", file_manager)
         self.team = team
         self.stance = stance
         self.config = config
         
-        # Initialize Gemini client (handles both Deep Research and generation)
-        self.gemini = GeminiClient(
-            api_key=config.gemini_api_key,
-            model=config.gemini_model
-        )
+        # Initialize client based on configuration
+        if config.openrouter_api_key:
+            # Use OpenRouter
+            from src.clients.openrouter_client import OpenRouterClient, create_gemini_adapter
+            openrouter_client = OpenRouterClient(api_key=config.openrouter_api_key, raw_data_logger=raw_data_logger)
+            self.gemini = create_gemini_adapter(openrouter_client, config.gemini_model, config.perplexity_model, agent_name=f"debator_{team}")
+        elif config.gemini_api_key:
+            # Use direct Gemini API
+            self.gemini = GeminiClient(
+                api_key=config.gemini_api_key,
+                model=config.gemini_model
+            )
+        else:
+            raise ValueError(
+                "Debator requires either OPENROUTER_API_KEY or GEMINI_API_KEY"
+            )
         
         # Initialize cost tracker
         self.cost_tracker = CostTracker(config.cost_budget) if config.cost_budget else None
@@ -437,28 +450,62 @@ Provide comprehensive analysis with credible sources and specific rebuttals."""
     
     def _parse_research_sources(self, research_report: str) -> List[Dict[str, Any]]:
         """
-        Parse sources from Deep Research report.
+        Parse sources from research report.
         
-        Deep Research includes inline citations and source lists.
-        We extract them for our citation system.
+        Extracts bibliographic citations from the research report's source list.
+        For free models without web access, this creates placeholder URLs.
+        For models with web access (Perplexity), this should extract real URLs.
         
         Args:
-            research_report: Research report from Deep Research agent
+            research_report: Research report from research agent
         
         Returns:
             List of sources extracted from report
         """
-        # COLLABORATION POINT 3: How to extract sources from research?
-        # Deep Research includes citations - we need to parse them
+        import re
         
-        # For MVP, create placeholder sources from report
-        # In production, parse actual citations from Deep Research output
-        sources = [{
-            "url": "https://research-source.com/placeholder",
-            "title": "Deep Research Source",
-            "content": research_report[:1000],  # Use report excerpt
-            "snippet": research_report[:200]
-        }]
+        sources = []
+        
+        # Try to find "Source List:" section
+        source_list_match = re.search(
+            r'\*\*Source List:\*\*\s*(.*?)(?:\n\n|\Z)',
+            research_report,
+            re.DOTALL | re.IGNORECASE
+        )
+        
+        if source_list_match:
+            source_text = source_list_match.group(1)
+            
+            # Parse numbered citations (e.g., "1. Author. (Year). Title. Publisher.")
+            citation_pattern = r'(\d+)\.\s+(.+?)(?=\n\d+\.|\Z)'
+            citations = re.findall(citation_pattern, source_text, re.DOTALL)
+            
+            for num, citation in citations:
+                citation_clean = citation.strip()
+                
+                # Try to extract title (usually after year in parentheses)
+                title_match = re.search(r'\([0-9]{4}\)\.\s+(.+?)\.', citation_clean)
+                title = title_match.group(1) if title_match else citation_clean[:100]
+                
+                # Try to extract URL if present (look for http/https)
+                url_match = re.search(r'(https?://[^\s\)]+)', citation_clean)
+                url = url_match.group(1) if url_match else f"https://scholar.google.com/scholar?q={title.replace(' ', '+')}"
+                
+                sources.append({
+                    "url": url,
+                    "title": title,
+                    "content": citation_clean,
+                    "snippet": citation_clean[:200]
+                })
+        
+        # Fallback: If no sources found, create one placeholder from report
+        if not sources:
+            sources = [{
+                "url": "https://scholar.google.com/scholar?q=universal+basic+income",
+                "title": "Research compilation on topic",
+                "content": research_report[:1000],
+                "snippet": research_report[:200]
+            }]
         
         return sources
     
@@ -530,7 +577,8 @@ Provide comprehensive analysis with credible sources and specific rebuttals."""
         
         # Parse JSON response (deterministic with schema)
         try:
-            parsed = json.loads(response)
+            from src.utils.json_parser import parse_json_response
+            parsed = parse_json_response(response)
             main = parsed.get("main_statement", "")
             supplementary = parsed.get("supplementary_material", "")
             

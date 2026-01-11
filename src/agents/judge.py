@@ -26,7 +26,8 @@ class JudgeAgent(Agent):
         self,
         name: str,
         file_manager,
-        config
+        config,
+        raw_data_logger=None
     ):
         """
         Initialize judge agent.
@@ -35,15 +36,27 @@ class JudgeAgent(Agent):
             name: Agent name ("judge")
             file_manager: FileManager instance
             config: Configuration object
+            raw_data_logger: Optional RawDataLogger for logging all model calls
         """
         super().__init__(name, "judge", file_manager)
         self.config = config
         
-        # Initialize Claude client
-        self.claude = ClaudeClient(
-            api_key=config.claude_api_key,
-            model=config.claude_model
-        )
+        # Initialize client based on configuration
+        if config.openrouter_api_key:
+            # Use OpenRouter
+            from src.clients.openrouter_client import OpenRouterClient, create_claude_adapter
+            openrouter_client = OpenRouterClient(api_key=config.openrouter_api_key, raw_data_logger=raw_data_logger)
+            self.claude = create_claude_adapter(openrouter_client, config.claude_model, agent_name="judge")
+        elif config.claude_api_key:
+            # Use direct Claude API
+            self.claude = ClaudeClient(
+                api_key=config.claude_api_key,
+                model=config.claude_model
+            )
+        else:
+            raise ValueError(
+                "Judge requires either OPENROUTER_API_KEY or CLAUDE_API_KEY"
+            )
     
     async def execute_turn(self, context: AgentContext) -> AgentResponse:
         """
@@ -109,7 +122,8 @@ class JudgeAgent(Agent):
         
         # Parse JSON response
         try:
-            analysis = json.loads(response)
+            from src.utils.json_parser import parse_json_response
+            analysis = parse_json_response(response)
             
             # Validate structure
             if "consensus" not in analysis:

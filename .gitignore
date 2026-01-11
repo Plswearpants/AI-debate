@@ -1,3 +1,13 @@
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+*.key
+
+# Debate data (large, user-generated)
+debates/*/
+!debates/.gitkeep
+
 # Python
 __pycache__/
 *.py[cod]
@@ -16,45 +26,43 @@ parts/
 sdist/
 var/
 wheels/
+pip-wheel-metadata/
+share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-
-# Virtual environments
-venv/
-env/
-ENV/
-.venv
-
-# IDEs
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# Environment variables
-.env
+MANIFEST
 
 # Testing
 .pytest_cache/
 .coverage
 htmlcov/
 .tox/
-coverage.xml
+.nox/
 
-# Debate data (keep structure, ignore content)
-debates/*/
-!debates/.gitkeep
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
 
 # Logs
 *.log
 logs/
 
-# OS
-.DS_Store
-Thumbs.db
-
 # Temporary files
 *.tmp
 *.bak
+*.swp
+.cache/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Project specific
+checkpoints/
+temp/
+scratch/
