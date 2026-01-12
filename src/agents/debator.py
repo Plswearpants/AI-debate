@@ -452,9 +452,13 @@ Provide comprehensive analysis with credible sources and specific rebuttals."""
         """
         Parse sources from research report.
         
-        Extracts bibliographic citations from the research report's source list.
-        For free models without web access, this creates placeholder URLs.
-        For models with web access (Perplexity), this should extract real URLs.
+        Extracts sources from:
+        1. "Source List:" section (if present)
+        2. Numbered citations [1], [2], [3] etc. in the report body
+        3. Context around each citation to identify what it refers to
+        
+        For free models without web access, this creates searchable URLs.
+        For models with web access (Perplexity), this extracts real URLs.
         
         Args:
             research_report: Research report from research agent
@@ -465,8 +469,9 @@ Provide comprehensive analysis with credible sources and specific rebuttals."""
         import re
         
         sources = []
+        seen_citation_numbers = set()
         
-        # Try to find "Source List:" section
+        # Method 1: Try to find "Source List:" section
         source_list_match = re.search(
             r'\*\*Source List:\*\*\s*(.*?)(?:\n\n|\Z)',
             research_report,
@@ -482,6 +487,8 @@ Provide comprehensive analysis with credible sources and specific rebuttals."""
             
             for num, citation in citations:
                 citation_clean = citation.strip()
+                citation_num = int(num)
+                seen_citation_numbers.add(citation_num)
                 
                 # Try to extract title (usually after year in parentheses)
                 title_match = re.search(r'\([0-9]{4}\)\.\s+(.+?)\.', citation_clean)
@@ -495,10 +502,93 @@ Provide comprehensive analysis with credible sources and specific rebuttals."""
                     "url": url,
                     "title": title,
                     "content": citation_clean,
-                    "snippet": citation_clean[:200]
+                    "snippet": citation_clean[:200],
+                    "citation_number": citation_num
                 })
         
-        # Fallback: If no sources found, create one placeholder from report
+        # Method 2: Extract numbered citations [1], [2], [3] from report body
+        # Find all citation references in the text
+        citation_refs = re.findall(r'\[(\d+)\]', research_report)
+        citation_numbers = sorted(set(int(ref) for ref in citation_refs))
+        
+        # For each citation number, extract context and create a source
+        for citation_num in citation_numbers:
+            if citation_num in seen_citation_numbers:
+                continue  # Already extracted from source list
+            
+            # Find sentences/paragraphs containing this citation
+            # Look for patterns like "...text [N]..." or "...[N] text..."
+            citation_pattern = rf'\[{citation_num}\](?:[^\[]*?)(?=\[|\n\n|$)'
+            matches = re.findall(citation_pattern, research_report, re.DOTALL | re.IGNORECASE)
+            
+            # Also look for reverse pattern: text before [N]
+            reverse_pattern = rf'([^\[\n]{{20,200}})\[{citation_num}\]'
+            reverse_matches = re.findall(reverse_pattern, research_report, re.DOTALL | re.IGNORECASE)
+            
+            # Combine context from both directions
+            context_parts = []
+            if matches:
+                context_parts.extend(matches[:2])  # Take first 2 matches
+            if reverse_matches:
+                context_parts.extend(reverse_matches[:2])
+            
+            # Extract key phrases to identify the source
+            context_text = " ".join(context_parts[:100]) if context_parts else ""
+            
+            # Try to identify source type from context
+            title = None
+            if "Stockton" in context_text or "pilot program" in context_text.lower():
+                title = "Stockton Universal Basic Income Pilot Program"
+            elif "Roosevelt Institute" in context_text:
+                title = "Roosevelt Institute UBI Economic Analysis"
+            elif "Pew Research" in context_text or "Pew" in context_text:
+                title = "Pew Research Center UBI Public Opinion Survey"
+            elif "Bread for the City" in context_text:
+                title = "Bread for the City Guaranteed Income Project"
+            elif "Alaska" in context_text and "dividend" in context_text.lower():
+                title = "Alaska Permanent Fund Dividend Program"
+            elif "Gallup" in context_text:
+                title = "Gallup Poll on UBI and Automation"
+            elif "Georgetown" in context_text or "Widerquist" in context_text:
+                title = "Georgetown University UBI Cost Analysis"
+            elif "Congressional Budget Office" in context_text or "CBO" in context_text:
+                title = "Congressional Budget Office UBI Cost Estimate"
+            else:
+                # Extract a meaningful title from context
+                # Look for capitalized phrases or quoted text
+                title_match = re.search(r'["\']([^"\']{10,80})["\']', context_text)
+                if title_match:
+                    title = title_match.group(1)
+                else:
+                    # Use first significant phrase
+                    words = context_text.split()[:10]
+                    title = " ".join(words).strip()[:80]
+                    if not title:
+                        title = f"Research Source {citation_num}"
+            
+            # Create searchable URL
+            search_query = title.replace(' ', '+') if title else f"universal+basic+income+source+{citation_num}"
+            url = f"https://scholar.google.com/scholar?q={search_query}"
+            
+            # Extract snippet from context
+            snippet = context_text[:200] if context_text else f"Source referenced as [{citation_num}] in research report"
+            
+            sources.append({
+                "url": url,
+                "title": title or f"Research Source {citation_num}",
+                "content": context_text[:500] if context_text else f"Citation [{citation_num}] from research report",
+                "snippet": snippet,
+                "citation_number": citation_num
+            })
+        
+        # Sort by citation number to maintain order
+        sources.sort(key=lambda x: x.get("citation_number", 999))
+        
+        # Remove citation_number from final output (it was just for sorting)
+        for source in sources:
+            source.pop("citation_number", None)
+        
+        # Fallback: If no sources found at all, create one placeholder
         if not sources:
             sources = [{
                 "url": "https://scholar.google.com/scholar?q=universal+basic+income",
@@ -698,19 +788,36 @@ RESEARCH FINDINGS:
         # Add sources for citation mapping
         if sources:
             prompt += "\n--- AVAILABLE SOURCES FOR CITATIONS ---\n"
+            prompt += "IMPORTANT: The research findings above use numbered citations [1], [2], [3], etc.\n"
+            prompt += "You MUST map these to the debate citation format below:\n\n"
+            
             for i, source in enumerate(sources[:15], 1):  # Max 15 sources
-                prompt += f"\n[Source {i}] → Use as [{self.team}_{i}]\n"
-                prompt += f"URL: {source['url']}\n"
-                prompt += f"Title: {source.get('title', 'N/A')}\n"
+                prompt += f"[Source {i}] → Use as [{self.team}_{i}]\n"
+                prompt += f"  Maps from research citation [{i}] in the findings above\n"
+                prompt += f"  URL: {source['url']}\n"
+                prompt += f"  Title: {source.get('title', 'N/A')}\n"
+                if source.get('snippet'):
+                    prompt += f"  Context: {source['snippet'][:150]}...\n"
+                prompt += "\n"
         
-        prompt += f"""\n\n--- YOUR TASK ---
+        prompt += f"""--- YOUR TASK ---
 Generate your {statement_type} statement for the debate.
+
+CITATION MAPPING (CRITICAL):
+- The research findings use numbered citations like [1], [2], [3], [4], [5], [6]
+- You MUST map these to debate citations: [1] → [{self.team}_1], [2] → [{self.team}_2], [3] → [{self.team}_3], etc.
+- Each different study, survey, or program should get its OWN citation number
+- Do NOT use the same citation [{self.team}_1] for multiple different sources
+- If research citation [1] refers to "150 pilot programs", use [{self.team}_1] for that
+- If research citation [2] refers to "Roosevelt Institute", use [{self.team}_2] for that
+- If research citation [3] refers to "Pew Research", use [{self.team}_3] for that
+- And so on for each distinct source
 
 Requirements:
 1. Use the research findings above to craft compelling arguments
-2. Cite sources using format [{self.team}_1], [{self.team}_2], etc.
-3. Match citation numbers to the Source numbers listed above
-4. Every factual claim must have a citation
+2. Map research citations [1], [2], [3]... to debate citations [{self.team}_1], [{self.team}_2], [{self.team}_3]...
+3. Each distinct source/study should have its own citation number
+4. Every factual claim must have a citation matching the source it came from
 5. Present arguments in a clear, persuasive manner
 
 Generate your {statement_type} statement now.
