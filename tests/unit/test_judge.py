@@ -130,7 +130,8 @@ class TestLatentUpdate:
     def test_create_latent_update(self, judge_agent):
         """Test creating file update for debate_latent."""
         analysis = {
-            "consensus": ["Both agree admin costs are high"],
+            "previous_consensus": [],
+            "new_consensus": ["Both agree admin costs are high"],
             "disagreement_frontier": [
                 {
                     "core_issue": "Impact on Innovation",
@@ -145,6 +146,8 @@ class TestLatentUpdate:
         assert update.file_type == "debate_latent"
         assert update.operation == FileUpdateOperation.UPDATE_DEBATE_LATENT
         assert update.data["round_number"] == 1
+        assert len(update.data["previous_consensus"]) == 0
+        assert len(update.data["new_consensus"]) == 1
         assert len(update.data["consensus"]) == 1
         assert len(update.data["disagreement_frontier"]) == 1
 
@@ -164,9 +167,9 @@ Disagreement Frontier:
         
         analysis = judge_agent._parse_analysis_fallback(response)
         
-        assert "consensus" in analysis
-        assert len(analysis["consensus"]) >= 1
-        assert any("costs" in c.lower() for c in analysis["consensus"])
+        assert "new_consensus" in analysis
+        assert len(analysis["new_consensus"]) >= 1
+        assert any("costs" in c.lower() for c in analysis["new_consensus"])
     
     def test_parse_analysis_fallback_extracts_frontier(self, judge_agent):
         """Test extracting frontier from text."""
@@ -221,7 +224,7 @@ class TestJudgeExecution:
             response = await judge_agent.execute_turn(context)
         
         assert response.success is True
-        assert "consensus" in response.output
+        assert "new_consensus" in response.output
         assert "disagreement_frontier" in response.output
         assert len(response.file_updates) == 1
         assert response.file_updates[0].file_type == "debate_latent"
