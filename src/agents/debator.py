@@ -256,9 +256,56 @@ class DebatorAgent(Agent):
         )
     
     async def _generate_closing(self, context: AgentContext) -> AgentResponse:
-        """Generate closing statement (no new citations allowed)."""
-        # TODO: Summarize arguments, no new research
-        return self.create_response(success=True, output={"statement": "TBD"})
+        """
+        Generate closing statement (no new citations allowed).
+        
+        Uses existing debate context and citations to craft a persuasive
+        closing that summarizes key arguments and argues why this team
+        should win.
+        """
+        # Build a summary of our existing research/arguments as context
+        public_transcript = context.current_state.get("history_chat", {}).get("public_transcript", [])
+        our_statements = [t.get("statement", "") for t in public_transcript if t.get("speaker") == self.team]
+        research_summary = "\n\n".join(our_statements[-3:]) if our_statements else "No previous statements."
+        
+        # Use empty sources list since no new citations are allowed
+        statement, supplementary = await self._generate_statement(
+            context=context,
+            research_report=research_summary,
+            sources=[],
+            statement_type="closing"
+        )
+        
+        # Create turn update (no new citations)
+        turn_data = {
+            "turn_id": f"turn_{context.round_number:03d}_{self.team}",
+            "round_number": context.round_number,
+            "round_label": "Closing",
+            "phase": "Phase 3",
+            "speaker": self.team,
+            "agent": self.name,
+            "timestamp": datetime.now().isoformat(),
+            "statement": statement,
+            "citations_used": []
+        }
+        
+        file_updates = [FileUpdate(
+            file_type="history_chat",
+            operation=FileUpdateOperation.APPEND_TURN,
+            data=turn_data
+        )]
+        
+        return self.create_response(
+            success=True,
+            output={
+                "statement": statement,
+                "supplementary_material": supplementary,
+                "citations": [],
+                "sources": []
+            },
+            file_updates=file_updates,
+            metadata={"phase": "closing"}
+        )
     
     async def _deep_research(self, topic: str, phase: str = "opening") -> str:
         """
@@ -733,10 +780,13 @@ Rebuttal guidelines:
         elif statement_type == "closing":
             base_prompt += """
 Closing statement guidelines:
-- Summarize your strongest arguments
-- Highlight where opponent failed to address your points
-- No new citations allowed - use existing evidence
-- Make emotional/ethical appeal if appropriate
+- Summarize your strongest arguments from the entire debate
+- Highlight where opponent failed to address your points or conceded ground
+- Explicitly state WHY YOUR TEAM SHOULD WIN this debate - make a compelling case
+- Reference the key evidence and arguments that give your side the edge
+- No new citations allowed - use existing evidence only
+- Make a strong emotional/ethical appeal where appropriate
+- End with a clear, memorable conclusion on why your position is superior
 """
         
         return base_prompt

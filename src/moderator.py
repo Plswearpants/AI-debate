@@ -334,11 +334,12 @@ class DebateModerator:
         
         Turn sequence:
         1. debator_a: Research + generate opening
-        2. factchecker_b: Verify a's citations (offensive)
-        3. debator_b: Research + generate opening
-        4. factchecker_a: Verify b's citations (offensive)
-        5. judge: Analyze both openings, map frontier
-        6. crowd: Vote 1 (rate debate performance)
+        2. crowd: Vote after debator_a speaks
+        3. factchecker_b: Verify a's citations (offensive)
+        4. debator_b: Research + generate opening
+        5. crowd: Vote after debator_b speaks
+        6. factchecker_a: Verify b's citations (offensive)
+        7. judge: Analyze both openings, map frontier
         """
         print(f"\n{'='*60}")
         print(f"🎤 PHASE 1: OPENING STATEMENTS")
@@ -351,6 +352,13 @@ class DebateModerator:
             "phase": "opening",
             "round_number": 1,
             "instructions": "Generate your opening statement with comprehensive research"
+        })
+        
+        # Crowd votes after debator_a speaks
+        await self.execute_agent_turn("crowd", {
+            "phase": "opening",
+            "round_number": 1,
+            "instructions": "Vote after Team A's opening statement"
         })
         
         # Turn 2: factchecker_b verifies
@@ -367,6 +375,13 @@ class DebateModerator:
             "instructions": "Generate your opening statement with comprehensive research"
         })
         
+        # Crowd votes after debator_b speaks
+        await self.execute_agent_turn("crowd", {
+            "phase": "opening",
+            "round_number": 1,
+            "instructions": "Vote after Team B's opening statement"
+        })
+        
         # Turn 4: factchecker_a verifies
         await self.execute_agent_turn("factchecker_a", {
             "phase": "opening",
@@ -379,13 +394,6 @@ class DebateModerator:
             "phase": "opening",
             "round_number": 1,
             "instructions": "Analyze both opening statements and map disagreement frontier"
-        })
-        
-        # Turn 6: crowd votes
-        await self.execute_agent_turn("crowd", {
-            "phase": "opening",
-            "round_number": 1,  # Vote 1
-            "instructions": "Vote on debate performance so far"
         })
         
         # Transition to debate rounds
@@ -404,10 +412,11 @@ class DebateModerator:
         Each round:
         1. factchecker_a: Defense + Offense
         2. debator_a: Rebuttal targeting frontier
-        3. factchecker_b: Defense + Offense
-        4. debator_b: Rebuttal targeting frontier
-        5. judge: Update frontier
-        6. crowd: Vote on round
+        3. crowd: Vote after debator_a speaks
+        4. factchecker_b: Defense + Offense
+        5. debator_b: Rebuttal targeting frontier
+        6. crowd: Vote after debator_b speaks
+        7. judge: Update frontier
         
         Default: 2 rounds (configurable)
         """
@@ -437,6 +446,13 @@ class DebateModerator:
                 "instructions": "Generate rebuttal targeting disagreement frontier"
             })
             
+            # Crowd votes after debator_a speaks
+            await self.execute_agent_turn("crowd", {
+                "phase": "rebuttal",
+                "round_number": round_num,
+                "instructions": "Vote after Team A's rebuttal"
+            })
+            
             # Team b turn
             await self.execute_agent_turn("factchecker_b", {
                 "phase": "rebuttal",
@@ -450,17 +466,18 @@ class DebateModerator:
                 "instructions": "Generate rebuttal targeting disagreement frontier"
             })
             
+            # Crowd votes after debator_b speaks
+            await self.execute_agent_turn("crowd", {
+                "phase": "rebuttal",
+                "round_number": round_num,
+                "instructions": "Vote after Team B's rebuttal"
+            })
+            
             # Evaluation
             await self.execute_agent_turn("judge", {
                 "phase": "rebuttal",
                 "round_number": round_num,
                 "instructions": "Update disagreement frontier based on new arguments"
-            })
-            
-            await self.execute_agent_turn("crowd", {
-                "phase": "rebuttal",
-                "round_number": round_num,
-                "instructions": "Vote on debate performance in this round"
             })
             
             print(f"✅ Round {round_num} complete\n")
@@ -482,9 +499,11 @@ class DebateModerator:
         1. factchecker_a: Final verification round
         2. factchecker_b: Final verification round
         3. debator_a: Closing statement (no new citations)
-        4. debator_b: Closing statement (no new citations)
-        5. judge: Final analysis and report
-        6. crowd: Final vote
+        4. crowd: Vote after debator_a's closing
+        5. debator_b: Closing statement (no new citations)
+        6. crowd: Vote after debator_b's closing
+        7. judge: Final analysis and report
+        8. crowd: Final vote after judge's analysis
         """
         print(f"\n{'='*60}")
         print(f"🏁 PHASE 3: CLOSING STATEMENTS")
@@ -506,17 +525,31 @@ class DebateModerator:
             "instructions": "Final verification of all citations"
         })
         
-        # Closing statements (no new research)
+        # Closing statements (no new research) with crowd voting after each
         await self.execute_agent_turn("debator_a", {
             "phase": "closing",
             "round_number": final_round,
             "instructions": "Generate closing statement (no new citations allowed)"
         })
         
+        # Crowd votes after debator_a's closing
+        await self.execute_agent_turn("crowd", {
+            "phase": "closing",
+            "round_number": final_round,
+            "instructions": "Vote after Team A's closing statement"
+        })
+        
         await self.execute_agent_turn("debator_b", {
             "phase": "closing",
             "round_number": final_round,
             "instructions": "Generate closing statement (no new citations allowed)"
+        })
+        
+        # Crowd votes after debator_b's closing
+        await self.execute_agent_turn("crowd", {
+            "phase": "closing",
+            "round_number": final_round,
+            "instructions": "Vote after Team B's closing statement"
         })
         
         # Final evaluation
@@ -526,6 +559,7 @@ class DebateModerator:
             "instructions": "Provide final analysis and comprehensive report"
         })
         
+        # Final crowd vote after judge's analysis
         await self.execute_agent_turn("crowd", {
             "phase": "closing",
             "round_number": final_round,

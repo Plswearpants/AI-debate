@@ -152,7 +152,8 @@ class CrowdAgent(Agent):
         Build voting prompt for a specific persona.
         
         Vote 0 (round 0): Vote on stance preference to determine team assignments
-        Vote 1+: Vote on debate performance to rate which team is winning
+        Vote 1+: Vote on debate performance to rate which team is winning,
+                  comparing against baseline and previous scores
         
         Args:
             persona: Persona dictionary
@@ -179,6 +180,33 @@ class CrowdAgent(Agent):
             if last_a and last_b:
                 break
         
+        # Look up this voter's baseline and previous scores
+        baseline_score = None
+        previous_score = None
+        previous_reasoning = None
+        crowd_opinion = context.current_state.get("crowd_opinion", {})
+        voters = crowd_opinion.get("voters", [])
+        for voter in voters:
+            if voter.get("voter_id") == persona["id"]:
+                history = voter.get("voting_history", [])
+                if history:
+                    baseline_score = history[0].get("score")
+                    if len(history) > 1:
+                        previous_score = history[-1].get("score")
+                        previous_reasoning = history[-1].get("rationale", "")
+                break
+        
+        # Build the history context section
+        history_section = ""
+        if baseline_score is not None:
+            history_section += f"\n**YOUR VOTING HISTORY:**\n"
+            history_section += f"- Baseline score (before debate): {baseline_score}\n"
+            if previous_score is not None and previous_score != baseline_score:
+                history_section += f"- Your most recent score: {previous_score}\n"
+                if previous_reasoning:
+                    history_section += f"- Your previous reasoning: {previous_reasoning}\n"
+            history_section += "\n"
+        
         prompt = f"""You are: {persona['description']}
 
 Topic: {context.topic}
@@ -188,7 +216,7 @@ Team a's argument:
 
 Team b's argument:
 {last_b[:400] if last_b else 'No statement yet'}
-
+{history_section}
 Based on your perspective as a {persona['name']}, rate how convinced you are by the overall debate so far.
 
 **SCORING SCHEME (1-100):**
@@ -204,8 +232,10 @@ Based on your perspective as a {persona['name']}, rate how convinced you are by 
 - Scores 1-50 mean Team b is winning in your view
 - Scores 51-100 mean Team a is winning in your view
 - Score exactly 50 if you lean slightly toward Team b
+- In your reasoning, explain WHY your score changed (or stayed the same) compared to your baseline score of {baseline_score if baseline_score is not None else 'N/A'}
+- If your opinion shifted, explain WHAT specifically in the arguments caused the shift
 
-Return JSON: {{"score": <1-100>, "reasoning": "<brief explanation>"}}"""
+Return JSON: {{"score": <1-100>, "reasoning": "<explain your score and why it changed or stayed the same compared to your baseline>"}}"""
         
         return prompt
     
