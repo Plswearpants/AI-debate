@@ -51,9 +51,9 @@ PERMISSIONS = {
     },
     "crowd": {
         "history_chat": ["public_transcript"],
-        "citation_pool": [],  # can change to "all" for future tests
+        "citation_pool": [],
         "debate_latent": ["all"],
-        "crowd_opinion": []
+        "crowd_opinion": ["all"]
     },
     "moderator": {
         "history_chat": ["all"],
