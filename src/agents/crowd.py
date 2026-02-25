@@ -131,13 +131,13 @@ class CrowdAgent(Agent):
             change = abs(scores[vid] - prev) if prev is not None else 0
 
             if change >= 25:
-                token_limit = 160
+                token_limit = 240
             elif change >= 15:
-                token_limit = 120
+                token_limit = 180
             elif change >= 3:
-                token_limit = 80
+                token_limit = 120
             else:
-                token_limit = 40
+                token_limit = 60
 
             journal_prompts.append(
                 self._build_journal_prompt(p, context, scores[vid], vd)
