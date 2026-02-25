@@ -121,13 +121,30 @@ class CrowdAgent(Agent):
         for persona, resp in zip(self.personas, score_responses):
             scores[persona["id"]] = self._extract_score(resp, persona)
 
-        # --- Pass 2: Journal entry ---
-        journal_prompts = [
-            self._build_journal_prompt(p, context, scores[p["id"]], voter_data.get(p["id"]))
-            for p in self.personas
-        ]
+        # --- Pass 2: Journal entry (token budget scales with score change) ---
+        journal_prompts = []
+        journal_token_limits = []
+        for p in self.personas:
+            vid = p["id"]
+            vd = voter_data.get(vid, {})
+            prev = vd.get("current_score") if vd else None
+            change = abs(scores[vid] - prev) if prev is not None else 0
 
-        max_journal_tokens = getattr(self.config, 'max_tokens_crowd_journal', 300)
+            if change >= 25:
+                token_limit = 160
+            elif change >= 15:
+                token_limit = 120
+            elif change >= 3:
+                token_limit = 80
+            else:
+                token_limit = 40
+
+            journal_prompts.append(
+                self._build_journal_prompt(p, context, scores[vid], vd)
+            )
+            journal_token_limits.append(token_limit)
+
+        max_journal_tokens = max(journal_token_limits) if journal_token_limits else 80
         journal_responses = await self.lambda_client.generate_batch(
             prompts=journal_prompts,
             temperature=self.config.crowd_temperature,
@@ -136,10 +153,11 @@ class CrowdAgent(Agent):
 
         # --- Combine into votes ---
         votes = []
-        for persona, journal_resp in zip(self.personas, journal_responses):
+        for persona, journal_resp, token_limit in zip(self.personas, journal_responses, journal_token_limits):
             vid = persona["id"]
             score = scores[vid]
-            journal_text = journal_resp.strip()[:500]
+            char_limit = token_limit * 4
+            journal_text = self._truncate_at_sentence(journal_resp.strip(), char_limit)
 
             vd = voter_data.get(vid, {})
             prev_score = vd.get("current_score")
@@ -312,6 +330,24 @@ Focus on: what arguments resonated or fell flat, what evidence mattered to you, 
 Journal entry:"""
 
         return prompt
+
+    # ------------------------------------------------------------------
+    # Text helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _truncate_at_sentence(text: str, max_chars: int) -> str:
+        """Truncate text at the last complete sentence before max_chars."""
+        if len(text) <= max_chars:
+            return text
+        truncated = text[:max_chars]
+        last_period = max(truncated.rfind('. '), truncated.rfind('.\n'), truncated.rfind('.'))
+        last_exclam = truncated.rfind('! ')
+        last_question = truncated.rfind('? ')
+        boundary = max(last_period, last_exclam, last_question)
+        if boundary > max_chars // 3:
+            return truncated[:boundary + 1].strip()
+        return truncated.strip()
 
     # ------------------------------------------------------------------
     # Score extraction (Pass 1 parsing)

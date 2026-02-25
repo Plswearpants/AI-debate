@@ -255,6 +255,8 @@ class FileManager:
                 "verified_at": None
             }
         
+        if citation_key in data["citations"][team_key]:
+            return
         data["citations"][team_key][citation_key] = citation_data
         
         # Update round index

@@ -158,40 +158,45 @@ class FactCheckerAgent(Agent):
         citation_data: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Verify a single citation using Perplexity with structured output.
-        
-        Args:
-            citation_key: Citation key (e.g., "b_1")
-            citation_data: Citation data including source_url
-        
-        Returns:
-            Verification dictionary with scores and comment
+        Verify a single citation by evaluating:
+        1. Content correspondence: does the claim match the cited source?
+        2. Source credibility: is the source trustworthy?
         """
+        claim = citation_data.get("claim_in_debate", "")
+        source_title = citation_data.get("source_title", citation_data.get("metadata", {}).get("title", ""))
         source_url = citation_data.get("source_url", "")
+        relevant_quote = citation_data.get("relevant_quote", citation_data.get("metadata", {}).get("snippet", ""))
+        has_url = citation_data.get("has_verified_url", bool(source_url and "scholar.google.com/scholar?q=" not in source_url))
         
-        # Build verification prompt
-        prompt = f"""Verify this citation:
+        prompt = f"""You are a rigorous fact-checker in an academic-style debate.
 
-Source URL: {source_url}
-Citation Key: [{citation_key}]
+CITATION [{citation_key}]:
+- Claim made in debate: "{claim}"
+- Source title: "{source_title}"
+- Quoted from source: "{relevant_quote}"
+{"- Source URL: " + source_url if has_url else "- No verified URL provided"}
 
-Your task:
-1. Evaluate the SOURCE CREDIBILITY (1-10):
-   - Is this a reliable, authoritative source?
-   - Consider: domain authority, publication reputation, author credentials
-   
-2. Evaluate CONTENT CORRESPONDENCE (1-10):
-   - Does the source actually support the claim being made?
-   - Check if data/quotes are accurate and in context
-   
-3. Provide ADVERSARY COMMENT:
-   - Brief (2-3 sentences) critical analysis
-   - Explain why you gave these scores
-   - Point out specific issues if any
+YOUR TASK — evaluate this citation on two dimensions:
 
-Be rigorous but fair. Find real issues, not nitpicks.
+1. CONTENT CORRESPONDENCE (1-10):
+   Like an academic reviewer: does the quoted passage actually support the claim?
+   - 9-10: Quote directly and accurately supports the claim
+   - 6-8: Quote generally supports but claim slightly overstates or simplifies
+   - 3-5: Weak connection; claim stretches what the source says
+   - 1-2: Misrepresentation; the source doesn't support this claim
 
-Return JSON with scores (1-10) and comment."""
+2. SOURCE CREDIBILITY (1-10):
+   Based on the source title, type, and what you can independently verify:
+   - 9-10: Peer-reviewed journal, government data, authoritative institution
+   - 6-8: Reputable news, well-known think tank, expert opinion
+   - 3-5: Blog, opinion piece, unverified report
+   - 1-2: Source appears fabricated, non-existent, or unreliable
+
+3. ADVERSARY COMMENT (2-3 sentences):
+   Explain your scores. Point out specific issues: misrepresentation,
+   cherry-picking, source quality concerns, or fabrication.
+
+Return JSON: {{"source_credibility_score": <1-10>, "content_correspondence_score": <1-10>, "adversary_comment": "<your analysis>"}}"""
         
         # Get structured output from Perplexity
         schema = get_schema("factchecker", "verification")
@@ -287,20 +292,24 @@ Return JSON with scores (1-10) and comment."""
         Returns:
             Defense response text
         """
-        source_url = citation_data.get("source_url", "")
+        claim = citation_data.get("claim_in_debate", "")
+        source_title = citation_data.get("source_title", citation_data.get("metadata", {}).get("title", ""))
+        relevant_quote = citation_data.get("relevant_quote", citation_data.get("metadata", {}).get("snippet", ""))
         
         prompt = f"""You are defending your team's citation that was criticized by the opponent.
 
 Your Citation: [{citation_key}]
-Source: {source_url}
+Your claim: "{claim}"
+Source: "{source_title}"
+Your quoted evidence: "{relevant_quote}"
 
 Opponent's Criticism:
 {adversary_comment}
 
 Generate a brief, professional response (2-3 sentences) that:
 1. Acknowledges valid criticisms if warranted
-2. Clarifies any misunderstandings about the source
-3. Provides additional context if helpful
+2. Clarifies any misrepresentation claims with evidence
+3. Provides additional context about the source's credibility
 4. Maintains your team's credibility
 
 Be concise, professional, and effective. Do not be defensive or dismissive."""
