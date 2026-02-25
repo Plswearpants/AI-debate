@@ -353,6 +353,9 @@ class DebateModerator:
         The moderator defines dimensions relevant to the debate topic,
         then creates diverse personas with unique life experiences.
         """
+        if not self.config.openrouter_api_key:
+            return self._fallback_personas(crowd_size)
+        
         from src.clients.openrouter_client import OpenRouterClient
         
         client = OpenRouterClient(
@@ -429,13 +432,40 @@ Return a JSON object:
     
     def _fallback_personas(self, crowd_size: int) -> List[Dict[str, Any]]:
         """Fallback to hardcoded persona templates."""
-        temp_crowd = CrowdAgent(
-            name="crowd",
-            file_manager=self.file_manager,
-            config=self.config,
-            raw_data_logger=self.raw_data_logger
-        )
-        return temp_crowd.personas
+        templates = [
+            {"type": "political", "name": "Progressive Activist", "desc": "Strong advocate for social justice and government intervention"},
+            {"type": "political", "name": "Fiscal Conservative", "desc": "Prioritizes low taxes, limited government, free markets"},
+            {"type": "political", "name": "Libertarian", "desc": "Values individual freedom and minimal government"},
+            {"type": "political", "name": "Social Democrat", "desc": "Supports mixed economy and social safety net"},
+            {"type": "political", "name": "Moderate Independent", "desc": "Pragmatic centrist, case-by-case evaluation"},
+            {"type": "professional", "name": "Economist", "desc": "PhD economist focused on data and empirical evidence"},
+            {"type": "professional", "name": "Small Business Owner", "desc": "Practical perspective on business and employment"},
+            {"type": "professional", "name": "Social Worker", "desc": "Front-line experience with poverty and social programs"},
+            {"type": "professional", "name": "Tech Entrepreneur", "desc": "Innovation-focused, disruption-oriented thinking"},
+            {"type": "professional", "name": "Public School Teacher", "desc": "Education and community welfare perspective"},
+            {"type": "demographic", "name": "Working Class Parent", "desc": "Struggles with bills, childcare, job security"},
+            {"type": "demographic", "name": "Retired Senior", "desc": "Fixed income, healthcare concerns, traditional values"},
+            {"type": "demographic", "name": "College Student", "desc": "Young, idealistic, concerned about future opportunities"},
+            {"type": "demographic", "name": "Rural Resident", "desc": "Small town perspective, self-reliance values"},
+            {"type": "demographic", "name": "Urban Professional", "desc": "City dweller, cosmopolitan, career-focused"},
+            {"type": "stakeholder", "name": "Healthcare Worker", "desc": "Insider view of healthcare system challenges"},
+            {"type": "stakeholder", "name": "Environmental Advocate", "desc": "Climate and sustainability priority"},
+            {"type": "stakeholder", "name": "Union Representative", "desc": "Worker rights and collective bargaining focus"},
+            {"type": "stakeholder", "name": "Corporate Executive", "desc": "Business efficiency and shareholder value perspective"},
+            {"type": "stakeholder", "name": "Nonprofit Director", "desc": "Mission-driven, community impact focused"},
+        ]
+        personas = []
+        for i in range(crowd_size):
+            t = templates[i % len(templates)]
+            personas.append({
+                "id": f"v_{i+1:03d}",
+                "name": f"{t['name']} #{i // len(templates) + 1}",
+                "type": t["type"],
+                "description": t["desc"],
+                "life_experience": t["desc"],
+                "dimensions": {}
+            })
+        return personas
     
     async def _phase_1_opening(self) -> None:
         """
