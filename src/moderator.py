@@ -224,11 +224,12 @@ class DebateModerator:
         
         Steps:
         1. Create debate directory and JSON files
-        2. Run Vote 0 (crowd votes on stance preference)
-        3. Determine team assignments (winner → team a)
-        4. Calculate resource multiplier if bias exists
-        5. Initialize all agents with assigned stances
-        6. Transition to OPENING phase
+        2. Generate topic-relevant crowd personas via LLM
+        3. Run Vote 0 (crowd votes on stance preference)
+        4. Determine team assignments (winner → team a)
+        5. Calculate resource multiplier if bias exists
+        6. Initialize all agents with assigned stances
+        7. Transition to OPENING phase
         """
         print(f"\n{'='*60}")
         print(f"📋 PHASE 0: INITIALIZATION")
@@ -239,20 +240,30 @@ class DebateModerator:
         self.file_manager.initialize_files(self.debate_id, self.topic)
         print("✅ Debate files initialized")
         
-        # 2. Run Vote 0 - determine initial audience preference
-        # Note: We need a temporary crowd agent for Vote 0
+        # 2. Generate topic-relevant personas
+        print("🧑‍🤝‍🧑 Generating crowd personas...")
+        personas = await self._generate_crowd_personas(self.topic, self.config.crowd_size)
+        print(f"✅ Generated {len(personas)} personas with topic-relevant dimensions")
+        
+        # Store personas in crowd_opinion for persistence
+        crowd_data = self.file_manager._read_json("crowd_opinion")
+        crowd_data["personas"] = personas
+        self.file_manager.write_by_moderator("crowd_opinion", crowd_data)
+        
+        # 3. Run Vote 0 with generated personas
         temp_crowd = CrowdAgent(
             name="crowd",
             file_manager=self.file_manager,
             config=self.config,
-            raw_data_logger=self.raw_data_logger
+            raw_data_logger=self.raw_data_logger,
+            personas=personas
         )
         
         vote_zero_context = AgentContext(
             debate_id=self.debate_id,
             topic=self.topic,
             phase="initialization",
-            round_number=0,  # Vote 0
+            round_number=0,
             current_state={},
             instructions="Vote on your initial stance preference (FOR or AGAINST)"
         )
@@ -263,15 +274,23 @@ class DebateModerator:
         if not vote_zero_response.success:
             raise Exception(f"Vote 0 failed: {vote_zero_response.errors}")
         
-        # Apply file updates from Vote 0
         for update in vote_zero_response.file_updates:
             self._apply_file_update(update)
         
-        # 3. Process Vote 0 results
+        # Initialize journals with life experience intros
+        crowd_data = self.file_manager._read_json("crowd_opinion")
+        for voter in crowd_data.get("voters", []):
+            persona = next((p for p in personas if p["id"] == voter["voter_id"]), None)
+            if persona:
+                life_exp = persona.get("life_experience", persona.get("description", ""))
+                baseline_score = voter.get("voting_history", [{}])[0].get("score", "?") if voter.get("voting_history") else "?"
+                voter["journal"] = f"## About Me\n{life_exp}\n\n## Initial Stance (Score: {baseline_score})\n{voter.get('voting_history', [{}])[0].get('rationale', '')}"
+        self.file_manager.write_by_moderator("crowd_opinion", crowd_data)
+        
+        # 4. Process Vote 0 results
         votes = vote_zero_response.output["votes"]
         avg_score = vote_zero_response.output["average_score"]
         
-        # Scores > 50 = FOR, < 50 = AGAINST
         for_count = sum(1 for v in votes if v["score"] > 50)
         against_count = len(votes) - for_count
         
@@ -279,14 +298,13 @@ class DebateModerator:
         print(f"   AGAINST: {against_count} votes")
         print(f"   Average score: {avg_score:.1f}")
         
-        # 4. Assign teams (winner becomes team a)
+        # 5. Assign teams
         self.state.assign_teams(
             for_stance="for",
             against_stance="against",
             vote_results={"for": for_count, "against": against_count}
         )
         
-        # Log Vote 0 results
         self.logger.log_moderator_action(
             action="vote_0_completed",
             details={
@@ -300,7 +318,7 @@ class DebateModerator:
         print(f"   Team A: {self.state.team_assignments['team_a']['stance'].upper()}")
         print(f"   Team B: {self.state.team_assignments['team_b']['stance'].upper()}")
         
-        # 5. Calculate resource multiplier
+        # 6. Calculate resource multiplier
         self.state.calculate_resource_multiplier(
             vote_results={"for": for_count, "against": against_count},
             threshold=self.config.resource_multiplier_threshold
@@ -310,16 +328,16 @@ class DebateModerator:
             losing_team = "b" if for_count > against_count else "a"
             print(f"   Resource multiplier: {self.state.resource_multiplier:.2f}x (team {losing_team})")
         
-        # 6. Initialize all agents with correct stances
+        # 7. Initialize all agents with correct stances (pass personas to crowd)
         team_a_stance = self.state.team_assignments['team_a']['stance']
         team_b_stance = self.state.team_assignments['team_b']['stance']
+        self._generated_personas = personas
         self.agents = self._initialize_agents(team_a_stance, team_b_stance)
         print("✅ All agents initialized")
         
-        # Save checkpoint before expensive Deep Research
         self._save_checkpoint()
         
-        # 7. Transition to opening
+        # 8. Transition to opening
         self.state.transition_to(DebatePhase.OPENING)
         self.logger.log_moderator_action(
             action="phase_transition",
@@ -328,17 +346,139 @@ class DebateModerator:
         )
         print(f"\n✅ Phase 0 complete\n")
     
+    async def _generate_crowd_personas(self, topic: str, crowd_size: int) -> List[Dict[str, Any]]:
+        """
+        Generate topic-relevant crowd personas using an LLM.
+        
+        The moderator defines dimensions relevant to the debate topic,
+        then creates diverse personas with unique life experiences.
+        """
+        if not self.config.openrouter_api_key:
+            return self._fallback_personas(crowd_size)
+        
+        from src.clients.openrouter_client import OpenRouterClient
+        
+        client = OpenRouterClient(
+            api_key=self.config.openrouter_api_key,
+            raw_data_logger=self.raw_data_logger
+        )
+        
+        num_templates = min(crowd_size, 20)
+        
+        prompt = f"""You are designing a diverse audience for a debate on: "{topic}"
+
+Generate exactly {num_templates} unique voter personas. Each persona must feel like a real person with a specific life experience that shapes their perspective on this topic.
+
+REQUIREMENTS:
+1. First, identify 4-6 dimensions RELEVANT TO THIS TOPIC (not generic). Each dimension should have 3-5 levels (NOT binary).
+2. Distribute personas across these dimensions for maximum diversity.
+3. Each persona needs a unique name, age, and a 1-paragraph life experience (2-3 sentences) that explains WHY they might lean a certain way on this topic.
+4. The life experiences should be specific and personal, not generic descriptions.
+
+Return a JSON object:
+{{
+  "dimensions": {{
+    "dimension_name": ["level1", "level2", "level3", ...],
+    ...
+  }},
+  "personas": [
+    {{
+      "name": "First Last, age",
+      "type": "dimension_category",
+      "dimensions": {{"dim1": "level", "dim2": "level", ...}},
+      "life_experience": "1 paragraph personal backstory relevant to the topic..."
+    }},
+    ...
+  ]
+}}"""
+        
+        try:
+            model = self.config.gemini_model
+            response = await client.generate(
+                prompt=prompt,
+                model=model,
+                temperature=0.9,
+                max_tokens=4096
+            )
+            
+            from src.utils.json_parser import parse_json_response
+            result = parse_json_response(response)
+            
+            dimensions = result.get("dimensions", {})
+            raw_personas = result.get("personas", [])
+            
+            if not raw_personas:
+                print("⚠️  LLM returned no personas, falling back to defaults")
+                return self._fallback_personas(crowd_size)
+            
+            personas = []
+            for i in range(crowd_size):
+                template = raw_personas[i % len(raw_personas)]
+                suffix = f" (#{i // len(raw_personas) + 1})" if crowd_size > len(raw_personas) and i >= len(raw_personas) else ""
+                personas.append({
+                    "id": f"v_{i+1:03d}",
+                    "name": f"{template['name']}{suffix}",
+                    "type": template.get("type", "general"),
+                    "dimensions": template.get("dimensions", {}),
+                    "life_experience": template.get("life_experience", ""),
+                    "description": template.get("life_experience", "")
+                })
+            
+            return personas
+            
+        except Exception as e:
+            print(f"⚠️  Persona generation failed: {e}. Using defaults.")
+            return self._fallback_personas(crowd_size)
+    
+    def _fallback_personas(self, crowd_size: int) -> List[Dict[str, Any]]:
+        """Fallback to hardcoded persona templates."""
+        templates = [
+            {"type": "political", "name": "Progressive Activist", "desc": "Strong advocate for social justice and government intervention"},
+            {"type": "political", "name": "Fiscal Conservative", "desc": "Prioritizes low taxes, limited government, free markets"},
+            {"type": "political", "name": "Libertarian", "desc": "Values individual freedom and minimal government"},
+            {"type": "political", "name": "Social Democrat", "desc": "Supports mixed economy and social safety net"},
+            {"type": "political", "name": "Moderate Independent", "desc": "Pragmatic centrist, case-by-case evaluation"},
+            {"type": "professional", "name": "Economist", "desc": "PhD economist focused on data and empirical evidence"},
+            {"type": "professional", "name": "Small Business Owner", "desc": "Practical perspective on business and employment"},
+            {"type": "professional", "name": "Social Worker", "desc": "Front-line experience with poverty and social programs"},
+            {"type": "professional", "name": "Tech Entrepreneur", "desc": "Innovation-focused, disruption-oriented thinking"},
+            {"type": "professional", "name": "Public School Teacher", "desc": "Education and community welfare perspective"},
+            {"type": "demographic", "name": "Working Class Parent", "desc": "Struggles with bills, childcare, job security"},
+            {"type": "demographic", "name": "Retired Senior", "desc": "Fixed income, healthcare concerns, traditional values"},
+            {"type": "demographic", "name": "College Student", "desc": "Young, idealistic, concerned about future opportunities"},
+            {"type": "demographic", "name": "Rural Resident", "desc": "Small town perspective, self-reliance values"},
+            {"type": "demographic", "name": "Urban Professional", "desc": "City dweller, cosmopolitan, career-focused"},
+            {"type": "stakeholder", "name": "Healthcare Worker", "desc": "Insider view of healthcare system challenges"},
+            {"type": "stakeholder", "name": "Environmental Advocate", "desc": "Climate and sustainability priority"},
+            {"type": "stakeholder", "name": "Union Representative", "desc": "Worker rights and collective bargaining focus"},
+            {"type": "stakeholder", "name": "Corporate Executive", "desc": "Business efficiency and shareholder value perspective"},
+            {"type": "stakeholder", "name": "Nonprofit Director", "desc": "Mission-driven, community impact focused"},
+        ]
+        personas = []
+        for i in range(crowd_size):
+            t = templates[i % len(templates)]
+            personas.append({
+                "id": f"v_{i+1:03d}",
+                "name": f"{t['name']} #{i // len(templates) + 1}",
+                "type": t["type"],
+                "description": t["desc"],
+                "life_experience": t["desc"],
+                "dimensions": {}
+            })
+        return personas
+    
     async def _phase_1_opening(self) -> None:
         """
         Phase 1: Opening statements.
         
         Turn sequence:
         1. debator_a: Research + generate opening
-        2. factchecker_b: Verify a's citations (offensive)
-        3. debator_b: Research + generate opening
-        4. factchecker_a: Verify b's citations (offensive)
-        5. judge: Analyze both openings, map frontier
-        6. crowd: Vote 1 (rate debate performance)
+        2. crowd: Vote after debator_a speaks
+        3. factchecker_b: Verify a's citations (offensive)
+        4. debator_b: Research + generate opening
+        5. crowd: Vote after debator_b speaks
+        6. factchecker_a: Verify b's citations (offensive)
+        7. judge: Analyze both openings, map frontier
         """
         print(f"\n{'='*60}")
         print(f"🎤 PHASE 1: OPENING STATEMENTS")
@@ -351,6 +491,13 @@ class DebateModerator:
             "phase": "opening",
             "round_number": 1,
             "instructions": "Generate your opening statement with comprehensive research"
+        })
+        
+        # Crowd votes after debator_a speaks
+        await self.execute_agent_turn("crowd", {
+            "phase": "opening",
+            "round_number": 1,
+            "instructions": "Vote after Team A's opening statement"
         })
         
         # Turn 2: factchecker_b verifies
@@ -367,6 +514,13 @@ class DebateModerator:
             "instructions": "Generate your opening statement with comprehensive research"
         })
         
+        # Crowd votes after debator_b speaks
+        await self.execute_agent_turn("crowd", {
+            "phase": "opening",
+            "round_number": 1,
+            "instructions": "Vote after Team B's opening statement"
+        })
+        
         # Turn 4: factchecker_a verifies
         await self.execute_agent_turn("factchecker_a", {
             "phase": "opening",
@@ -379,13 +533,6 @@ class DebateModerator:
             "phase": "opening",
             "round_number": 1,
             "instructions": "Analyze both opening statements and map disagreement frontier"
-        })
-        
-        # Turn 6: crowd votes
-        await self.execute_agent_turn("crowd", {
-            "phase": "opening",
-            "round_number": 1,  # Vote 1
-            "instructions": "Vote on debate performance so far"
         })
         
         # Transition to debate rounds
@@ -404,10 +551,11 @@ class DebateModerator:
         Each round:
         1. factchecker_a: Defense + Offense
         2. debator_a: Rebuttal targeting frontier
-        3. factchecker_b: Defense + Offense
-        4. debator_b: Rebuttal targeting frontier
-        5. judge: Update frontier
-        6. crowd: Vote on round
+        3. crowd: Vote after debator_a speaks
+        4. factchecker_b: Defense + Offense
+        5. debator_b: Rebuttal targeting frontier
+        6. crowd: Vote after debator_b speaks
+        7. judge: Update frontier
         
         Default: 2 rounds (configurable)
         """
@@ -437,6 +585,13 @@ class DebateModerator:
                 "instructions": "Generate rebuttal targeting disagreement frontier"
             })
             
+            # Crowd votes after debator_a speaks
+            await self.execute_agent_turn("crowd", {
+                "phase": "rebuttal",
+                "round_number": round_num,
+                "instructions": "Vote after Team A's rebuttal"
+            })
+            
             # Team b turn
             await self.execute_agent_turn("factchecker_b", {
                 "phase": "rebuttal",
@@ -450,17 +605,18 @@ class DebateModerator:
                 "instructions": "Generate rebuttal targeting disagreement frontier"
             })
             
+            # Crowd votes after debator_b speaks
+            await self.execute_agent_turn("crowd", {
+                "phase": "rebuttal",
+                "round_number": round_num,
+                "instructions": "Vote after Team B's rebuttal"
+            })
+            
             # Evaluation
             await self.execute_agent_turn("judge", {
                 "phase": "rebuttal",
                 "round_number": round_num,
                 "instructions": "Update disagreement frontier based on new arguments"
-            })
-            
-            await self.execute_agent_turn("crowd", {
-                "phase": "rebuttal",
-                "round_number": round_num,
-                "instructions": "Vote on debate performance in this round"
             })
             
             print(f"✅ Round {round_num} complete\n")
@@ -482,9 +638,11 @@ class DebateModerator:
         1. factchecker_a: Final verification round
         2. factchecker_b: Final verification round
         3. debator_a: Closing statement (no new citations)
-        4. debator_b: Closing statement (no new citations)
-        5. judge: Final analysis and report
-        6. crowd: Final vote
+        4. crowd: Vote after debator_a's closing
+        5. debator_b: Closing statement (no new citations)
+        6. crowd: Vote after debator_b's closing
+        7. judge: Final analysis and report
+        8. crowd: Final vote after judge's analysis
         """
         print(f"\n{'='*60}")
         print(f"🏁 PHASE 3: CLOSING STATEMENTS")
@@ -506,17 +664,31 @@ class DebateModerator:
             "instructions": "Final verification of all citations"
         })
         
-        # Closing statements (no new research)
+        # Closing statements (no new research) with crowd voting after each
         await self.execute_agent_turn("debator_a", {
             "phase": "closing",
             "round_number": final_round,
             "instructions": "Generate closing statement (no new citations allowed)"
         })
         
+        # Crowd votes after debator_a's closing
+        await self.execute_agent_turn("crowd", {
+            "phase": "closing",
+            "round_number": final_round,
+            "instructions": "Vote after Team A's closing statement"
+        })
+        
         await self.execute_agent_turn("debator_b", {
             "phase": "closing",
             "round_number": final_round,
             "instructions": "Generate closing statement (no new citations allowed)"
+        })
+        
+        # Crowd votes after debator_b's closing
+        await self.execute_agent_turn("crowd", {
+            "phase": "closing",
+            "round_number": final_round,
+            "instructions": "Vote after Team B's closing statement"
         })
         
         # Final evaluation
@@ -526,6 +698,7 @@ class DebateModerator:
             "instructions": "Provide final analysis and comprehensive report"
         })
         
+        # Final crowd vote after judge's analysis
         await self.execute_agent_turn("crowd", {
             "phase": "closing",
             "round_number": final_round,
@@ -577,6 +750,13 @@ class DebateModerator:
         """
         agent = self.agents[agent_name]
         
+        # Inject scoreboard into debator instructions
+        instructions = context_params.get("instructions", "")
+        if "debator" in agent_name:
+            scoreboard = self._get_scoreboard_text()
+            if scoreboard:
+                instructions = f"{instructions}\n\n{scoreboard}"
+        
         # Build context with permission-filtered state
         context = AgentContext(
             debate_id=self.debate_id,
@@ -584,7 +764,7 @@ class DebateModerator:
             phase=context_params.get("phase", self.state.phase.value),
             round_number=context_params.get("round_number", self.state.round_number),
             current_state=agent.read_state(),  # Permission-filtered!
-            instructions=context_params.get("instructions", "")
+            instructions=instructions
         )
         
         # Execute turn
@@ -729,26 +909,28 @@ class DebateModerator:
                 )
                 
                 if voter:
-                    # Update existing voter
                     voter["voting_history"].append({
                         "round": vote_round["round"],
                         "score": vote["score"],
                         "rationale": vote.get("rationale", vote.get("reasoning", ""))
                     })
                     voter["current_score"] = vote["score"]
+                    # Append journal entry if present
+                    if vote.get("journal_entry"):
+                        voter["journal"] = voter.get("journal", "") + "\n\n" + vote["journal_entry"]
                 else:
-                    # Create new voter (happens in Vote 0 or if voter was missing)
                     new_voter = {
                         "voter_id": voter_id,
                         "persona": vote.get("persona", "Unknown"),
-                        "persona_description": vote.get("persona_description", ""),  # System prompt
-                        "persona_type": vote.get("persona_type", "unknown"),  # political, professional, etc.
+                        "persona_description": vote.get("persona_description", ""),
+                        "persona_type": vote.get("persona_type", "unknown"),
                         "voting_history": [{
                             "round": vote_round["round"],
                             "score": vote["score"],
                             "rationale": vote.get("rationale", vote.get("reasoning", ""))
                         }],
-                        "current_score": vote["score"]
+                        "current_score": vote["score"],
+                        "journal": vote.get("journal_entry", "")
                     }
                     data["voters"].append(new_voter)
             
@@ -818,7 +1000,8 @@ class DebateModerator:
                 name="crowd",
                 file_manager=self.file_manager,
                 config=self.config,
-                raw_data_logger=self.raw_data_logger
+                raw_data_logger=self.raw_data_logger,
+                personas=getattr(self, '_generated_personas', None)
             )
         }
         
@@ -873,6 +1056,35 @@ class DebateModerator:
             }
         )
     
+    def _get_scoreboard_text(self) -> str:
+        """Build a scoreboard string from the latest crowd opinion data."""
+        try:
+            crowd_data = self.file_manager._read_json("crowd_opinion")
+            vote_rounds = crowd_data.get("vote_rounds", [])
+            if not vote_rounds:
+                return ""
+
+            latest = vote_rounds[-1]
+            avg = latest.get("average_score", 50)
+            count = latest.get("vote_count", 0)
+            favor_a = sum(1 for v in crowd_data.get("voters", []) if v.get("current_score", 50) > 50)
+            favor_b = count - favor_a
+
+            lines = [
+                "📊 CROWD SCOREBOARD:",
+                f"  Latest avg: {avg:.1f}/100 ({'leans Team A' if avg > 50 else 'leans Team B'})",
+                f"  Favor Team A: {favor_a} | Favor Team B: {favor_b}",
+            ]
+
+            if len(vote_rounds) >= 2:
+                prev_avg = vote_rounds[-2].get("average_score", avg)
+                shift = avg - prev_avg
+                lines.append(f"  Shift: {shift:+.1f} from previous vote")
+
+            return "\n".join(lines)
+        except Exception:
+            return ""
+
     def _should_checkpoint(self, agent_name: str, context_params: Dict[str, Any]) -> bool:
         """
         Determine if we should save a checkpoint.

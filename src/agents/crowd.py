@@ -1,17 +1,18 @@
 """
-Crowd Agent - Manages 100 diverse persona voting swarm.
+Crowd Agent - Manages diverse persona voting swarm with personal journals.
 
-Uses: Lambda GPU (Llama 3.1 8B) for batch inference
+Uses: OpenRouter or Lambda GPU for batch inference
 Responsibilities:
-- Maintain 100 diverse personas (political, professional, demographic)
+- Maintain diverse personas with topic-relevant dimensions and life experiences
 - Vote 0: Vote on stance preference (determines team assignments)
-- Vote 1+: Vote on debate performance (1-100 scale: 1-50 = AGAINST/Team b, 51-100 = FOR/Team a)
-- Track opinion shifts over rounds
-- Update crowd_opinion.json
+- Vote 1+: Two-pass voting (score first, then journal entry)
+- Track opinion shifts via personal journals (cumulative memory)
+- Enforce consistency: justify score changes relative to baseline
+- Update crowd_opinion.json with votes and journals
 """
 
 import json
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from datetime import datetime
 
 from src.agents.base import Agent, AgentContext, AgentResponse, FileUpdate, FileUpdateOperation
@@ -20,35 +21,24 @@ from src.utils.schemas import get_schema
 
 
 class CrowdAgent(Agent):
-    """Agent that manages crowd voting with diverse personas."""
-    
+    """Agent that manages crowd voting with diverse personas and personal journals."""
+
     def __init__(
         self,
         name: str,
         file_manager,
         config,
-        raw_data_logger=None
+        raw_data_logger=None,
+        personas: Optional[List[Dict[str, Any]]] = None
     ):
-        """
-        Initialize crowd agent.
-        
-        Args:
-            name: Agent name ("crowd")
-            file_manager: FileManager instance
-            config: Configuration object
-            raw_data_logger: Optional RawDataLogger for logging all model calls
-        """
         super().__init__(name, "crowd", file_manager)
         self.config = config
-        
-        # Initialize client based on configuration
+
         if config.use_openrouter_for_crowd and config.openrouter_api_key:
-            # Use OpenRouter for crowd voting
             from src.clients.openrouter_client import OpenRouterClient, create_lambda_adapter
             openrouter_client = OpenRouterClient(api_key=config.openrouter_api_key, raw_data_logger=raw_data_logger)
             self.lambda_client = create_lambda_adapter(openrouter_client, config.lambda_model, agent_name="crowd")
         elif config.lambda_gpu_endpoint:
-            # Use Lambda GPU
             self.lambda_client = LambdaGPUClient(
                 endpoint=config.lambda_gpu_endpoint,
                 api_key=config.lambda_gpu_api_key
@@ -59,116 +49,195 @@ class CrowdAgent(Agent):
                 "  - OPENROUTER_API_KEY + USE_OPENROUTER_FOR_CROWD=true, OR\n"
                 "  - LAMBDA_GPU_ENDPOINT (for direct Lambda GPU)"
             )
-        
-        # Load personas
-        self.personas = self._load_personas(config.crowd_size)
-    
+
+        if personas:
+            self.personas = personas
+        else:
+            self.personas = self._load_personas(config.crowd_size)
+
     async def execute_turn(self, context: AgentContext) -> AgentResponse:
-        """
-        Execute crowd voting.
-        
-        All personas vote on current debate state in batch.
-        
-        Args:
-            context: Current debate context
-        
-        Returns:
-            AgentResponse with vote results and file updates
-        """
         try:
-            # Get votes from all personas
-            votes = await self._batch_vote(context)
-            
-            # Create file update
-            file_update = self._create_crowd_update(
-                votes=votes,
-                round_number=context.round_number
-            )
-            
-            # Calculate aggregate statistics
-            avg_score = sum(v["score"] for v in votes) / len(votes) if votes else 0
-            
-            return self.create_response(
-                success=True,
-                output={
-                    "votes": votes,
-                    "average_score": round(avg_score, 1),
-                    "voter_count": len(votes)
-                },
-                file_updates=[file_update],
-                metadata={
-                    "average_score": round(avg_score, 1),
-                    "voter_count": len(votes)
-                }
-            )
-        
+            if context.round_number == 0:
+                return await self._execute_vote_zero(context)
+            return await self._execute_two_pass_vote(context)
         except Exception as e:
             return self.create_response(
                 success=False,
                 output={},
                 errors=[f"Crowd voting failed: {str(e)}"]
             )
-    
-    async def _batch_vote(self, context: AgentContext) -> List[Dict[str, Any]]:
-        """
-        Batch vote from all personas.
-        
-        Uses Lambda GPU for efficient parallel inference.
-        
-        Args:
-            context: Debate context
-        
-        Returns:
-            List of vote dictionaries
-        """
-        # Build prompts for all personas
-        prompts = []
-        for persona in self.personas:
-            prompt = self._build_voting_prompt(persona, context)
-            prompts.append(prompt)
-        
-        # Batch inference on Lambda GPU
+
+    # ------------------------------------------------------------------
+    # Vote 0: baseline stance preference (same as before, no journal yet)
+    # ------------------------------------------------------------------
+
+    async def _execute_vote_zero(self, context: AgentContext) -> AgentResponse:
+        prompts = [self._build_vote_zero_prompt(p, context) for p in self.personas]
+
         responses = await self.lambda_client.generate_batch(
             prompts=prompts,
             temperature=self.config.crowd_temperature,
             max_tokens=self.config.max_tokens_crowd
         )
-        
-        # Parse responses into votes
+
         votes = []
         for persona, response in zip(self.personas, responses):
             try:
                 vote = self._parse_vote(response, persona)
                 votes.append(vote)
             except Exception as e:
-                # Skip invalid votes
                 print(f"⚠️  Failed to parse vote from {persona['id']}: {e}")
                 continue
-        
-        return votes
-    
-    def _build_voting_prompt(self, persona: Dict[str, Any], context: AgentContext) -> str:
-        """
-        Build voting prompt for a specific persona.
-        
-        Vote 0 (round 0): Vote on stance preference to determine team assignments
-        Vote 1+: Vote on debate performance to rate which team is winning
-        
-        Args:
-            persona: Persona dictionary
-            context: Debate context
-        
-        Returns:
-            Prompt string for this persona
-        """
-        # Check if this is Vote 0 (initial stance preference)
-        if context.round_number == 0:
-            return self._build_vote_zero_prompt(persona, context)
-        
-        # Get latest statements from both sides (Vote 1+)
+
+        file_update = self._create_crowd_update(votes, context.round_number)
+        avg_score = sum(v["score"] for v in votes) / len(votes) if votes else 0
+
+        return self.create_response(
+            success=True,
+            output={"votes": votes, "average_score": round(avg_score, 1), "voter_count": len(votes)},
+            file_updates=[file_update],
+            metadata={"average_score": round(avg_score, 1), "voter_count": len(votes)}
+        )
+
+    # ------------------------------------------------------------------
+    # Two-pass voting: score first, then journal entry
+    # ------------------------------------------------------------------
+
+    async def _execute_two_pass_vote(self, context: AgentContext) -> AgentResponse:
+        voter_data = self._load_voter_data(context)
+
+        # --- Pass 1: Score only ---
+        score_prompts = [
+            self._build_score_prompt(p, context, voter_data.get(p["id"]))
+            for p in self.personas
+        ]
+        score_responses = await self.lambda_client.generate_batch(
+            prompts=score_prompts,
+            temperature=self.config.crowd_temperature,
+            max_tokens=30
+        )
+
+        scores = {}
+        for persona, resp in zip(self.personas, score_responses):
+            scores[persona["id"]] = self._extract_score(resp, persona)
+
+        # --- Pass 2: Journal entry (token budget scales with score change) ---
+        journal_prompts = []
+        journal_token_limits = []
+        for p in self.personas:
+            vid = p["id"]
+            vd = voter_data.get(vid, {})
+            prev = vd.get("current_score") if vd else None
+            change = abs(scores[vid] - prev) if prev is not None else 0
+
+            if change >= 25:
+                token_limit = 240
+            elif change >= 15:
+                token_limit = 180
+            elif change >= 3:
+                token_limit = 120
+            else:
+                token_limit = 60
+
+            journal_prompts.append(
+                self._build_journal_prompt(p, context, scores[vid], vd)
+            )
+            journal_token_limits.append(token_limit)
+
+        max_journal_tokens = max(journal_token_limits) if journal_token_limits else 80
+        journal_responses = await self.lambda_client.generate_batch(
+            prompts=journal_prompts,
+            temperature=self.config.crowd_temperature,
+            max_tokens=max_journal_tokens
+        )
+
+        # --- Combine into votes ---
+        votes = []
+        for persona, journal_resp, token_limit in zip(self.personas, journal_responses, journal_token_limits):
+            vid = persona["id"]
+            score = scores[vid]
+            char_limit = token_limit * 4
+            journal_text = self._truncate_at_sentence(journal_resp.strip(), char_limit)
+
+            vd = voter_data.get(vid, {})
+            prev_score = vd.get("current_score")
+            vote_label = context.instructions or f"Round {context.round_number}"
+
+            journal_header = f"## {vote_label} | Score: {score}"
+            if prev_score is not None:
+                delta = score - prev_score
+                direction = "↑" if delta > 0 else ("↓" if delta < 0 else "→")
+                journal_header += f" ({direction}{abs(delta)} from {prev_score})"
+
+            full_entry = f"{journal_header}\n{journal_text}"
+
+            votes.append({
+                "voter_id": vid,
+                "persona": persona["name"],
+                "persona_description": persona.get("life_experience", persona.get("description", "")),
+                "persona_type": persona.get("type", "general"),
+                "score": score,
+                "rationale": journal_text[:200],
+                "journal_entry": full_entry
+            })
+
+        file_update = self._create_crowd_update(votes, context.round_number)
+        avg_score = sum(v["score"] for v in votes) / len(votes) if votes else 0
+
+        return self.create_response(
+            success=True,
+            output={"votes": votes, "average_score": round(avg_score, 1), "voter_count": len(votes)},
+            file_updates=[file_update],
+            metadata={"average_score": round(avg_score, 1), "voter_count": len(votes)}
+        )
+
+    # ------------------------------------------------------------------
+    # Prompt builders
+    # ------------------------------------------------------------------
+
+    def _build_vote_zero_prompt(self, persona: Dict[str, Any], context: AgentContext) -> str:
+        life_exp = persona.get("life_experience", persona.get("description", ""))
+
+        return f"""You are: {persona['name']}
+{life_exp}
+
+Topic: {context.topic}
+
+This is the initial vote BEFORE any debate arguments. Based on your life experience and values, what is your initial stance on this topic?
+
+**SCORING SCHEME (1-100):**
+• 1-50: AGAINST the proposal (oppose it)
+  - 1-25: Strongly against
+  - 26-50: Moderately against
+• 51-100: FOR the proposal (support it)
+  - 51-75: Moderately for
+  - 76-100: Strongly for
+
+Return JSON: {{"score": <1-100>, "reasoning": "<brief explanation of your initial stance>"}}"""
+
+    def _build_score_prompt(
+        self,
+        persona: Dict[str, Any],
+        context: AgentContext,
+        voter_data: Optional[Dict[str, Any]]
+    ) -> str:
+        life_exp = persona.get("life_experience", persona.get("description", ""))
+        journal = ""
+        vote_history_text = ""
+        baseline_score = None
+        prev_score = None
+
+        if voter_data:
+            journal = voter_data.get("journal", "")
+            history = voter_data.get("voting_history", [])
+            if history:
+                baseline_score = history[0].get("score")
+                prev_score = voter_data.get("current_score", history[-1].get("score"))
+                vote_history_text = "Your vote history: " + ", ".join(
+                    f"R{h['round']}={h['score']}" for h in history
+                )
+
         public_transcript = context.current_state.get("history_chat", {}).get("public_transcript", [])
-        
-        # Get most recent statement from each side
         last_a = ""
         last_b = ""
         for turn in reversed(public_transcript):
@@ -178,202 +247,232 @@ class CrowdAgent(Agent):
                 last_b = turn.get("statement", "")
             if last_a and last_b:
                 break
-        
-        prompt = f"""You are: {persona['description']}
+
+        prompt = f"""You are: {persona['name']}
+{life_exp}
 
 Topic: {context.topic}
+"""
 
-Team a's argument:
-{last_a[:400] if last_a else 'No statement yet'}
+        if journal:
+            prompt += f"""
+YOUR PERSONAL JOURNAL (your thoughts so far):
+{journal[-1500:]}
 
-Team b's argument:
-{last_b[:400] if last_b else 'No statement yet'}
+"""
 
-Based on your perspective as a {persona['name']}, rate how convinced you are by the overall debate so far.
+        prompt += f"""Team A's latest argument:
+{last_a[:500] if last_a else 'No statement yet'}
 
-**SCORING SCHEME (1-100):**
-• 1-50: FAVOR Team b (you think Team b is winning)
-  - 1-25: Strongly favor Team b
-  - 26-50: Moderately favor Team b
-  
-• 51-100: FAVOR Team a (you think Team a is winning)
-  - 51-75: Moderately favor Team a
-  - 76-100: Strongly favor Team a
+Team B's latest argument:
+{last_b[:500] if last_b else 'No statement yet'}
 
-**IMPORTANT:**
-- Scores 1-50 mean Team b is winning in your view
-- Scores 51-100 mean Team a is winning in your view
-- Score exactly 50 if you lean slightly toward Team b
+"""
+        if vote_history_text:
+            prompt += f"{vote_history_text}\n"
+        if baseline_score is not None:
+            prompt += f"Your baseline score (before debate): {baseline_score}\n"
+        if prev_score is not None:
+            prompt += f"Your most recent score: {prev_score}\n"
 
-Return JSON: {{"score": <1-100>, "reasoning": "<brief explanation>"}}"""
-        
+        prompt += """
+**SCORING (1-100):** 1-50 = favor Team B, 51-100 = favor Team A.
+
+CONSISTENCY RULE: You are the same person throughout this debate. Your score should only change if a specific argument or evidence justifies it. Random swings are not allowed.
+
+Respond with ONLY a single integer (your score). Nothing else."""
+
         return prompt
-    
-    def _build_vote_zero_prompt(self, persona: Dict[str, Any], context: AgentContext) -> str:
-        """
-        Build Vote 0 prompt - voting on stance preference (not debate performance).
-        
-        This determines which stance becomes Team a (winner) and Team b (second).
-        
-        Args:
-            persona: Persona dictionary
-            context: Debate context (topic only, no statements yet)
-        
-        Returns:
-            Vote 0 prompt
-        """
-        # Extract stance descriptions from context metadata
-        # For now, assume topic is phrased as "Should we [do X]?"
-        # "for" = implement/yes, "against" = oppose/no
-        
-        prompt = f"""You are: {persona['description']}
 
-Topic: {context.topic}
+    def _build_journal_prompt(
+        self,
+        persona: Dict[str, Any],
+        context: AgentContext,
+        new_score: int,
+        voter_data: Optional[Dict[str, Any]]
+    ) -> str:
+        life_exp = persona.get("life_experience", persona.get("description", ""))
+        prev_score = None
+        baseline_score = None
 
-This is the initial vote BEFORE any debate arguments. Based on your values and perspective as a {persona['name']}, what is your initial stance on this topic?
+        if voter_data:
+            history = voter_data.get("voting_history", [])
+            if history:
+                baseline_score = history[0].get("score")
+                prev_score = voter_data.get("current_score", history[-1].get("score"))
 
-Vote on your stance preference using this scoring scheme:
+        score_change = abs(new_score - prev_score) if prev_score is not None else 0
 
-**SCORING SCHEME (1-100):**
-• 1-50: AGAINST the proposal (oppose it)
-  - 1-25: Strongly against
-  - 26-50: Moderately against
-  
-• 51-100: FOR the proposal (support it)
-  - 51-75: Moderately for
-  - 76-100: Strongly for
+        if score_change >= 20:
+            length_guide = "Write 3-4 sentences explaining what specifically changed your mind. This is a major shift and must be well justified."
+        elif score_change >= 10:
+            length_guide = "Write 2-3 sentences on what influenced your updated view."
+        elif score_change >= 3:
+            length_guide = "Write 1-2 sentences noting what you found notable."
+        else:
+            length_guide = "Write 1 sentence on your current thinking."
 
-**IMPORTANT:** 
-- Scores 1-50 mean you are AGAINST
-- Scores 51-100 mean you are FOR
-- Score exactly 50 if you lean slightly against
+        prompt = f"""You are: {persona['name']}
+{life_exp}
 
-This vote determines the baseline audience opinion before the debate begins.
-The side with more support will speak first as Team a.
+You just scored this debate round: {new_score}/100 (1-50 = favor Team B, 51-100 = favor Team A).
+"""
+        if baseline_score is not None:
+            prompt += f"Your baseline (pre-debate) score was: {baseline_score}\n"
+        if prev_score is not None:
+            prompt += f"Your previous score was: {prev_score} (change: {new_score - prev_score:+d})\n"
 
-Return JSON: {{"score": <1-100>, "reasoning": "<brief explanation of your initial stance>"}}"""
-        
+        prompt += f"""
+Write a personal journal entry reflecting on this round of the debate. {length_guide}
+
+Focus on: what arguments resonated or fell flat, what evidence mattered to you, and why your score changed or stayed the same. Write from your personal perspective.
+
+Journal entry:"""
+
         return prompt
-    
+
+    # ------------------------------------------------------------------
+    # Text helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _truncate_at_sentence(text: str, max_chars: int) -> str:
+        """Truncate text at the last complete sentence before max_chars."""
+        if len(text) <= max_chars:
+            return text
+        truncated = text[:max_chars]
+        last_period = max(truncated.rfind('. '), truncated.rfind('.\n'), truncated.rfind('.'))
+        last_exclam = truncated.rfind('! ')
+        last_question = truncated.rfind('? ')
+        boundary = max(last_period, last_exclam, last_question)
+        if boundary > max_chars // 3:
+            return truncated[:boundary + 1].strip()
+        return truncated.strip()
+
+    # ------------------------------------------------------------------
+    # Score extraction (Pass 1 parsing)
+    # ------------------------------------------------------------------
+
+    def _extract_score(self, response: str, persona: Dict[str, Any]) -> int:
+        import re
+        text = response.strip()
+
+        # Try direct integer parse
+        try:
+            score = int(text)
+            return max(1, min(100, score))
+        except ValueError:
+            pass
+
+        # Try to find a number in the response
+        match = re.search(r'\b(\d{1,3})\b', text)
+        if match:
+            score = int(match.group(1))
+            if 1 <= score <= 100:
+                return score
+
+        # Try JSON parse
+        try:
+            from src.utils.json_parser import parse_json_response
+            data = parse_json_response(text)
+            score = data.get("score", 50)
+            return max(1, min(100, int(score)))
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+
+        print(f"Warning: Could not parse score for {persona['id']}, using fallback: 50")
+        return 50
+
+    # ------------------------------------------------------------------
+    # Legacy vote parsing (for Vote 0 backward compat)
+    # ------------------------------------------------------------------
+
     def _parse_vote(self, response: str, persona: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Parse vote from persona response.
-        
-        Args:
-            response: LLM response (should be JSON)
-            persona: Persona dictionary
-        
-        Returns:
-            Vote dictionary
-        """
         import re
         from src.utils.json_parser import parse_json_response
-        
+
         try:
-            # Try to parse as JSON (handles markdown code blocks automatically)
             vote_data = parse_json_response(response)
             score = vote_data.get("score", 50)
             reasoning = vote_data.get("reasoning", vote_data.get("rationale", ""))
         except json.JSONDecodeError:
-            # Fallback: extract score from text using improved regex
             score_match = re.search(r'"?score"?\s*[:\s]+(\d+)', response, re.IGNORECASE)
             if score_match:
                 score = int(score_match.group(1))
                 reasoning = response[:200]
             else:
-                # Last resort: try to find any number between 1-100
                 number_match = re.search(r'\b(\d{1,3})\b', response)
                 score = int(number_match.group(1)) if number_match else 50
                 reasoning = response[:200]
                 print(f"Warning: Could not parse vote JSON for {persona['id']}, using fallback score: {score}")
-        
-        # Clamp score to valid range (1-100, where 1-50 = AGAINST/Team b, 51-100 = FOR/Team a)
+
         score = max(1, min(100, score))
-        
+
         return {
             "voter_id": persona["id"],
             "persona": persona["name"],
-            "persona_description": persona["description"],  # System prompt/characteristics
-            "persona_type": persona["type"],  # political, professional, demographic, stakeholder
+            "persona_description": persona.get("life_experience", persona.get("description", "")),
+            "persona_type": persona.get("type", "general"),
             "score": score,
-            "rationale": reasoning[:200]  # Moderator expects "rationale", not "reasoning"
+            "rationale": reasoning[:200]
         }
-    
-    def _create_crowd_update(
-        self,
-        votes: List[Dict[str, Any]],
-        round_number: int
-    ) -> FileUpdate:
-        """
-        Create file update for crowd_opinion.json.
-        
-        Args:
-            votes: List of vote dictionaries
-            round_number: Current round number
-        
-        Returns:
-            FileUpdate object
-        """
-        # Calculate aggregate statistics
+
+    # ------------------------------------------------------------------
+    # File updates
+    # ------------------------------------------------------------------
+
+    def _create_crowd_update(self, votes: List[Dict[str, Any]], round_number: int) -> FileUpdate:
         avg_score = sum(v["score"] for v in votes) / len(votes) if votes else 0
-        
+
         return FileUpdate(
             file_type="crowd_opinion",
             operation=FileUpdateOperation.ADD_CROWD_VOTE,
             data={
-                "round": round_number,  # Moderator expects "round", not "round_number"
+                "round": round_number,
                 "votes": votes,
                 "average_score": round(avg_score, 1),
                 "vote_count": len(votes),
                 "timestamp": datetime.now().isoformat()
             }
         )
-    
+
+    # ------------------------------------------------------------------
+    # Voter data loading
+    # ------------------------------------------------------------------
+
+    def _load_voter_data(self, context: AgentContext) -> Dict[str, Dict[str, Any]]:
+        crowd_opinion = context.current_state.get("crowd_opinion", {})
+        voters = crowd_opinion.get("voters", [])
+        return {v["voter_id"]: v for v in voters}
+
+    # ------------------------------------------------------------------
+    # Default persona generation (fallback if moderator doesn't provide)
+    # ------------------------------------------------------------------
+
     def _load_personas(self, count: int) -> List[Dict[str, Any]]:
-        """
-        Load crowd personas.
-        
-        For MVP, generates diverse personas programmatically.
-        In production, could load from src/prompts/crowd_personas.json
-        
-        Args:
-            count: Number of personas to generate
-        
-        Returns:
-            List of persona dictionaries
-        """
-        # Persona templates covering ideological and demographic diversity
         persona_templates = [
-            # Political spectrum
             {"type": "political", "name": "Progressive Activist", "description": "Strong advocate for social justice and government intervention"},
             {"type": "political", "name": "Fiscal Conservative", "description": "Prioritizes low taxes, limited government, free markets"},
             {"type": "political", "name": "Libertarian", "description": "Values individual freedom and minimal government"},
             {"type": "political", "name": "Social Democrat", "description": "Supports mixed economy and social safety net"},
             {"type": "political", "name": "Moderate Independent", "description": "Pragmatic centrist, case-by-case evaluation"},
-            
-            # Professional backgrounds
             {"type": "professional", "name": "Economist", "description": "PhD economist focused on data and empirical evidence"},
             {"type": "professional", "name": "Small Business Owner", "description": "Practical perspective on business and employment"},
             {"type": "professional", "name": "Social Worker", "description": "Front-line experience with poverty and social programs"},
             {"type": "professional", "name": "Tech Entrepreneur", "description": "Innovation-focused, disruption-oriented thinking"},
             {"type": "professional", "name": "Public School Teacher", "description": "Education and community welfare perspective"},
-            
-            # Demographic/experiential
             {"type": "demographic", "name": "Working Class Parent", "description": "Struggles with bills, childcare, job security"},
             {"type": "demographic", "name": "Retired Senior", "description": "Fixed income, healthcare concerns, traditional values"},
             {"type": "demographic", "name": "College Student", "description": "Young, idealistic, concerned about future opportunities"},
             {"type": "demographic", "name": "Rural Resident", "description": "Small town perspective, self-reliance values"},
             {"type": "demographic", "name": "Urban Professional", "description": "City dweller, cosmopolitan, career-focused"},
-            
-            # Stakeholder groups
             {"type": "stakeholder", "name": "Healthcare Worker", "description": "Insider view of healthcare system challenges"},
             {"type": "stakeholder", "name": "Environmental Advocate", "description": "Climate and sustainability priority"},
             {"type": "stakeholder", "name": "Union Representative", "description": "Worker rights and collective bargaining focus"},
             {"type": "stakeholder", "name": "Corporate Executive", "description": "Business efficiency and shareholder value perspective"},
             {"type": "stakeholder", "name": "Nonprofit Director", "description": "Mission-driven, community impact focused"}
         ]
-        
-        # Generate personas by cycling through templates
+
         personas = []
         for i in range(count):
             template = persona_templates[i % len(persona_templates)]
@@ -381,26 +480,21 @@ Return JSON: {{"score": <1-100>, "reasoning": "<brief explanation of your initia
                 "id": f"v_{i+1:03d}",
                 "name": f"{template['name']} #{i//len(persona_templates) + 1}",
                 "description": template["description"],
+                "life_experience": template["description"],
                 "type": template["type"]
             }
             personas.append(persona)
-        
+
         return personas
-    
+
     def get_personas_summary(self) -> Dict[str, Any]:
-        """
-        Get summary of persona distribution.
-        
-        Returns:
-            Summary dictionary with counts by type
-        """
         by_type = {}
         for persona in self.personas:
             ptype = persona.get("type", "unknown")
             by_type[ptype] = by_type.get(ptype, 0) + 1
-        
+
         return {
             "total_personas": len(self.personas),
             "by_type": by_type,
-            "sample_personas": self.personas[:5]  # First 5 as examples
+            "sample_personas": self.personas[:5]
         }

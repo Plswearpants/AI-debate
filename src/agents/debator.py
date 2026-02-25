@@ -104,37 +104,32 @@ class DebatorAgent(Agent):
         Generate opening statement with research.
         
         Steps:
-        1. Deep research using Gemini Deep Research agent
-        2. Generate opening statement based on research
-        3. Extract citations and add to pool
-        4. Create file updates
+        1. Deep research
+        2. Generate statement with structured citation output
+        3. Register citations from structured output (no regex/positional mapping)
+        4. Create turn update
         """
-        # Step 1: Research using Gemini Deep Research
         research_report = await self._deep_research(context.topic)
-        
-        # Step 2: Extract sources from research report
+        research_urls = getattr(self.gemini, 'last_research_citations', [])
         sources = self._parse_research_sources(research_report)
         
-        # Step 3: Generate statement based on research
-        statement, supplementary = await self._generate_statement(
+        statement, supplementary, structured_citations = await self._generate_statement(
             context=context,
             research_report=research_report,
             sources=sources,
-            statement_type="opening"
+            statement_type="opening",
+            research_urls=research_urls
         )
         
-        # Step 4: Extract and register citations
-        citations = self._extract_citations(statement + supplementary)
-        file_updates = await self._register_citations(
-            citations,
-            sources,
-            context.round_number,
-            turn_id=f"turn_{context.round_number:03d}_{self.team}"
+        citation_keys = self._extract_citations(statement + supplementary)
+        turn_id = f"turn_{context.round_number:03d}_{self.team}"
+        file_updates = self._register_citations_from_structured(
+            citation_keys, structured_citations, statement,
+            context.round_number, turn_id, research_urls
         )
         
-        # Step 4: Create turn update
         turn_data = {
-            "turn_id": f"turn_{context.round_number:03d}_{self.team}",
+            "turn_id": turn_id,
             "round_number": context.round_number,
             "round_label": "Opening",
             "phase": "Phase 1",
@@ -142,7 +137,7 @@ class DebatorAgent(Agent):
             "agent": self.name,
             "timestamp": datetime.now().isoformat(),
             "statement": statement,
-            "citations_used": citations
+            "citations_used": citation_keys
         }
         
         file_updates.append(FileUpdate(
@@ -151,20 +146,18 @@ class DebatorAgent(Agent):
             data=turn_data
         ))
         
-        # Add supplementary material if any
         if supplementary:
-            supp_data = {
-                "turn_id": turn_data["turn_id"],
-                "round_number": context.round_number,
-                "supplementary_material": supplementary,
-                "citations_used": self._extract_citations(supplementary),
-                "timestamp": datetime.now().isoformat()
-            }
-            
             file_updates.append(FileUpdate(
                 file_type="history_chat",
                 operation=FileUpdateOperation.APPEND_TURN,
-                data={"speaker": self.team, **supp_data}
+                data={
+                    "speaker": self.team,
+                    "turn_id": turn_id,
+                    "round_number": context.round_number,
+                    "supplementary_material": supplementary,
+                    "citations_used": self._extract_citations(supplementary),
+                    "timestamp": datetime.now().isoformat()
+                }
             ))
         
         return self.create_response(
@@ -172,7 +165,7 @@ class DebatorAgent(Agent):
             output={
                 "statement": statement,
                 "supplementary_material": supplementary,
-                "citations": citations,
+                "citations": citation_keys,
                 "sources": sources,
                 "research_report": research_report
             },
@@ -183,35 +176,29 @@ class DebatorAgent(Agent):
     async def _generate_rebuttal(self, context: AgentContext) -> AgentResponse:
         """
         Generate rebuttal statement targeting disagreement frontier.
-        
         Uses Deep Research with debate context (Option C: Adversarial research).
         """
-        # Step 1: Deep Research with adversarial focus and debate context
         research_report = await self._deep_research_with_context(context)
-        
-        # Step 2: Extract sources from research
+        research_urls = getattr(self.gemini, 'last_research_citations', [])
         sources = self._parse_research_sources(research_report)
         
-        # Step 3: Generate rebuttal based on research
-        statement, supplementary = await self._generate_statement(
+        statement, supplementary, structured_citations = await self._generate_statement(
             context=context,
             research_report=research_report,
             sources=sources,
-            statement_type="rebuttal"
+            statement_type="rebuttal",
+            research_urls=research_urls
         )
         
-        # Step 4: Extract and register citations
-        citations = self._extract_citations(statement + supplementary)
-        file_updates = await self._register_citations(
-            citations,
-            sources,
-            context.round_number,
-            turn_id=f"turn_{context.round_number:03d}_{self.team}"
+        citation_keys = self._extract_citations(statement + supplementary)
+        turn_id = f"turn_{context.round_number:03d}_{self.team}"
+        file_updates = self._register_citations_from_structured(
+            citation_keys, structured_citations, statement,
+            context.round_number, turn_id, research_urls
         )
         
-        # Step 5: Create turn updates (same as opening)
         turn_data = {
-            "turn_id": f"turn_{context.round_number:03d}_{self.team}",
+            "turn_id": turn_id,
             "round_number": context.round_number,
             "round_label": f"Rebuttal {context.round_number - 1}",
             "phase": "Phase 2",
@@ -219,7 +206,7 @@ class DebatorAgent(Agent):
             "agent": self.name,
             "timestamp": datetime.now().isoformat(),
             "statement": statement,
-            "citations_used": citations
+            "citations_used": citation_keys
         }
         
         file_updates.append(FileUpdate(
@@ -229,17 +216,17 @@ class DebatorAgent(Agent):
         ))
         
         if supplementary:
-            supp_data = {
-                "turn_id": turn_data["turn_id"],
-                "round_number": context.round_number,
-                "supplementary_material": supplementary,
-                "citations_used": self._extract_citations(supplementary),
-                "timestamp": datetime.now().isoformat()
-            }
             file_updates.append(FileUpdate(
                 file_type="history_chat",
                 operation=FileUpdateOperation.APPEND_TURN,
-                data={"speaker": self.team, **supp_data}
+                data={
+                    "speaker": self.team,
+                    "turn_id": turn_id,
+                    "round_number": context.round_number,
+                    "supplementary_material": supplementary,
+                    "citations_used": self._extract_citations(supplementary),
+                    "timestamp": datetime.now().isoformat()
+                }
             ))
         
         return self.create_response(
@@ -247,7 +234,7 @@ class DebatorAgent(Agent):
             output={
                 "statement": statement,
                 "supplementary_material": supplementary,
-                "citations": citations,
+                "citations": citation_keys,
                 "sources": sources,
                 "research_report": research_report
             },
@@ -256,9 +243,56 @@ class DebatorAgent(Agent):
         )
     
     async def _generate_closing(self, context: AgentContext) -> AgentResponse:
-        """Generate closing statement (no new citations allowed)."""
-        # TODO: Summarize arguments, no new research
-        return self.create_response(success=True, output={"statement": "TBD"})
+        """
+        Generate closing statement (no new citations allowed).
+        
+        Uses existing debate context and citations to craft a persuasive
+        closing that summarizes key arguments and argues why this team
+        should win.
+        """
+        # Build a summary of our existing research/arguments as context
+        public_transcript = context.current_state.get("history_chat", {}).get("public_transcript", [])
+        our_statements = [t.get("statement", "") for t in public_transcript if t.get("speaker") == self.team]
+        research_summary = "\n\n".join(our_statements[-3:]) if our_statements else "No previous statements."
+        
+        # Use empty sources list since no new citations are allowed
+        statement, supplementary, _ = await self._generate_statement(
+            context=context,
+            research_report=research_summary,
+            sources=[],
+            statement_type="closing"
+        )
+        
+        # Create turn update (no new citations)
+        turn_data = {
+            "turn_id": f"turn_{context.round_number:03d}_{self.team}",
+            "round_number": context.round_number,
+            "round_label": "Closing",
+            "phase": "Phase 3",
+            "speaker": self.team,
+            "agent": self.name,
+            "timestamp": datetime.now().isoformat(),
+            "statement": statement,
+            "citations_used": []
+        }
+        
+        file_updates = [FileUpdate(
+            file_type="history_chat",
+            operation=FileUpdateOperation.APPEND_TURN,
+            data=turn_data
+        )]
+        
+        return self.create_response(
+            success=True,
+            output={
+                "statement": statement,
+                "supplementary_material": supplementary,
+                "citations": [],
+                "sources": []
+            },
+            file_updates=file_updates,
+            metadata={"phase": "closing"}
+        )
     
     async def _deep_research(self, topic: str, phase: str = "opening") -> str:
         """
@@ -636,25 +670,20 @@ Provide comprehensive analysis with credible sources and specific rebuttals."""
         context: AgentContext,
         research_report: str,
         sources: List[Dict[str, Any]],
-        statement_type: str
-    ) -> Tuple[str, str]:
+        statement_type: str,
+        research_urls: Optional[List[str]] = None
+    ) -> Tuple[str, str, List[Dict[str, Any]]]:
         """
         Generate statement using Gemini based on Deep Research report.
         
-        COLLABORATION POINT 4: System prompt and argumentation strategy
-        
-        Args:
-            context: Debate context
-            sources: Researched sources
-            statement_type: "opening", "rebuttal", or "closing"
-        
         Returns:
-            Tuple of (main_statement, supplementary_material)
+            Tuple of (main_statement, supplementary_material, structured_citations)
+            structured_citations: list of dicts with citation_key, source_title,
+                source_url, relevant_quote from the LLM's structured output
         """
         system_prompt = self._get_system_prompt(statement_type)
-        user_prompt = self._build_user_prompt(context, research_report, sources, statement_type)
+        user_prompt = self._build_user_prompt(context, research_report, sources, statement_type, research_urls)
         
-        # Get JSON schema for structured output
         schema = get_schema("debator", "statement")
         
         response = await self.gemini.generate(
@@ -662,24 +691,20 @@ Provide comprehensive analysis with credible sources and specific rebuttals."""
             system_instruction=system_prompt,
             temperature=self.config.gemini_temperature,
             max_tokens=self.config.max_tokens_debator,
-            response_format=schema  # Enforce JSON structure
+            response_format=schema
         )
         
-        # Parse JSON response (deterministic with schema)
+        structured_citations = []
         try:
             from src.utils.json_parser import parse_json_response
             parsed = parse_json_response(response)
             main = parsed.get("main_statement", "")
             supplementary = parsed.get("supplementary_material", "")
-            
-            # Update sources with citation mappings from structured output
-            if "citations" in parsed:
-                sources = self._update_sources_from_structured_output(parsed["citations"], sources)
+            structured_citations = parsed.get("citations", [])
         except json.JSONDecodeError:
-            # Fallback to old parsing if JSON fails
             main, supplementary = self._parse_response(response)
         
-        return main, supplementary
+        return main, supplementary, structured_citations
     
     def _get_system_prompt(self, statement_type: str) -> str:
         """
@@ -733,10 +758,13 @@ Rebuttal guidelines:
         elif statement_type == "closing":
             base_prompt += """
 Closing statement guidelines:
-- Summarize your strongest arguments
-- Highlight where opponent failed to address your points
-- No new citations allowed - use existing evidence
-- Make emotional/ethical appeal if appropriate
+- Summarize your strongest arguments from the entire debate
+- Highlight where opponent failed to address your points or conceded ground
+- Explicitly state WHY YOUR TEAM SHOULD WIN this debate - make a compelling case
+- Reference the key evidence and arguments that give your side the edge
+- No new citations allowed - use existing evidence only
+- Make a strong emotional/ethical appeal where appropriate
+- End with a clear, memorable conclusion on why your position is superior
 """
         
         return base_prompt
@@ -746,7 +774,8 @@ Closing statement guidelines:
         context: AgentContext,
         research_report: str,
         sources: List[Dict[str, Any]],
-        statement_type: str
+        statement_type: str,
+        research_urls: Optional[List[str]] = None
     ) -> str:
         """
         Build user prompt with research and context.
@@ -771,6 +800,13 @@ RESEARCH FINDINGS:
                 prompt += f"\n{speaker_label} statement:\n{turn['statement'][:300]}...\n"
             prompt += "\n"
         
+        # Add scoreboard / moderator instructions if present
+        if context.instructions:
+            for line in context.instructions.split("\n"):
+                if line.strip():
+                    prompt += f"{line}\n"
+            prompt += "\n"
+        
         # Add disagreement frontier if available (for rebuttals)
         if statement_type == "rebuttal":
             latent = context.current_state.get("debate_latent", {})
@@ -785,16 +821,29 @@ RESEARCH FINDINGS:
                         prompt += f"  Opponent's stance: {issue.get(f'{opponent_team}_stance', 'N/A')}\n"
                     prompt += "\n"
         
-        # Add sources for citation mapping
+        # Add sources for citation mapping — prefer real URLs from Perplexity
+        if research_urls:
+            prompt += "\n--- SOURCE URLs (from research, indexed by citation number) ---\n"
+            for i, url in enumerate(research_urls, 1):
+                prompt += f"[{i}] → {url}\n"
+            prompt += "\n"
+        
         if sources:
-            prompt += "\n--- AVAILABLE SOURCES FOR CITATIONS ---\n"
+            prompt += "--- AVAILABLE SOURCES FOR CITATIONS ---\n"
             prompt += "IMPORTANT: The research findings above use numbered citations [1], [2], [3], etc.\n"
             prompt += "You MUST map these to the debate citation format below:\n\n"
             
-            for i, source in enumerate(sources[:15], 1):  # Max 15 sources
+            for i, source in enumerate(sources[:15], 1):
+                url = ""
+                if research_urls and i <= len(research_urls):
+                    url = research_urls[i - 1]
+                elif source.get('url'):
+                    url = source['url']
+                
                 prompt += f"[Source {i}] → Use as [{self.team}_{i}]\n"
                 prompt += f"  Maps from research citation [{i}] in the findings above\n"
-                prompt += f"  URL: {source['url']}\n"
+                if url:
+                    prompt += f"  URL: {url}\n"
                 prompt += f"  Title: {source.get('title', 'N/A')}\n"
                 if source.get('snippet'):
                     prompt += f"  Context: {source['snippet'][:150]}...\n"
@@ -909,8 +958,6 @@ Return a JSON object with this structure:
         file_updates = []
         
         for i, citation_key in enumerate(citation_keys):
-            # Map citation to source (simple: use order)
-            # In production, might use semantic matching
             source = sources[i] if i < len(sources) else sources[-1]
             
             citation_data = {
@@ -936,3 +983,89 @@ Return a JSON object with this structure:
             ))
         
         return file_updates
+    
+    def _register_citations_from_structured(
+        self,
+        citation_keys: List[str],
+        structured_citations: List[Dict[str, Any]],
+        statement_text: str,
+        round_number: int,
+        turn_id: str,
+        research_urls: Optional[List[str]] = None
+    ) -> List[FileUpdate]:
+        """
+        Register citations using the debator's structured JSON output.
+        
+        Each structured citation has: citation_key, source_url, source_title,
+        relevant_quote. This avoids fragile positional mapping.
+        For citation keys used in the statement but not in structured output,
+        we extract the claim context from the statement text.
+        """
+        structured_map = {}
+        for sc in structured_citations:
+            key = sc.get("citation_key", "")
+            if not key.startswith(f"{self.team}_"):
+                key = f"{self.team}_{key}" if key else ""
+            if key:
+                structured_map[key] = sc
+        
+        file_updates = []
+        for citation_key in citation_keys:
+            sc = structured_map.get(citation_key, {})
+            
+            source_url = sc.get("source_url", "")
+            source_title = sc.get("source_title", "")
+            relevant_quote = sc.get("relevant_quote", "")
+            
+            # Resolve real URL: try structured output first, then research_urls by index
+            if not source_url or "scholar.google.com/scholar?q=" in source_url:
+                try:
+                    num = int(citation_key.split("_")[1])
+                    if research_urls and 0 < num <= len(research_urls):
+                        source_url = research_urls[num - 1]
+                except (ValueError, IndexError):
+                    pass
+            
+            claim_context = self._extract_claim_context(statement_text, citation_key)
+            
+            citation_data = {
+                "claim_in_debate": claim_context,
+                "source_url": source_url,
+                "source_title": source_title,
+                "relevant_quote": relevant_quote,
+                "has_verified_url": bool(source_url and source_url.startswith("http") and "scholar.google.com/scholar?q=" not in source_url),
+                "added_by": self.name,
+                "added_in_turn": turn_id,
+                "added_in_round": round_number,
+                "added_at": datetime.now().isoformat(),
+                "metadata": {
+                    "title": source_title,
+                    "snippet": relevant_quote[:200] if relevant_quote else ""
+                }
+            }
+            
+            file_updates.append(FileUpdate(
+                file_type="citation_pool",
+                operation=FileUpdateOperation.ADD_CITATION,
+                data={
+                    "team": self.team,
+                    "key": citation_key,
+                    "citation": citation_data
+                }
+            ))
+        
+        return file_updates
+    
+    def _extract_claim_context(self, text: str, citation_key: str) -> str:
+        """Extract the sentence(s) around a citation reference in the statement."""
+        marker = f"[{citation_key}]"
+        idx = text.find(marker)
+        if idx == -1:
+            return ""
+        start = max(0, text.rfind('.', 0, idx) + 1)
+        end = text.find('.', idx)
+        if end == -1:
+            end = min(len(text), idx + 200)
+        else:
+            end += 1
+        return text[start:end].strip()

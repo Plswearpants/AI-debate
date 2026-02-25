@@ -51,9 +51,9 @@ PERMISSIONS = {
     },
     "crowd": {
         "history_chat": ["public_transcript"],
-        "citation_pool": [],  # can change to "all" for future tests
+        "citation_pool": [],
         "debate_latent": ["all"],
-        "crowd_opinion": []
+        "crowd_opinion": ["all"]
     },
     "moderator": {
         "history_chat": ["all"],
@@ -255,6 +255,8 @@ class FileManager:
                 "verified_at": None
             }
         
+        if citation_key in data["citations"][team_key]:
+            return
         data["citations"][team_key][citation_key] = citation_data
         
         # Update round index

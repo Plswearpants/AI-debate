@@ -145,14 +145,14 @@ class TestPermissionFiltering:
         assert "b" in filtered["team_notes"]
     
     def test_crowd_cannot_see_crowd_opinion(self, file_manager):
-        """Test that crowd agents cannot read crowd_opinion file."""
+        """Test that crowd agents can read crowd_opinion for journals and vote history."""
         file_manager.initialize_files("test", "test topic")
         
-        # Crowd has empty permissions for crowd_opinion
+        # Crowd now has full access to crowd_opinion (needed for journals)
         filtered = file_manager.read_for_agent("crowd", "crowd_opinion")
         
-        # Should return empty dict (no access)
-        assert filtered == {}
+        assert "debate_id" in filtered
+        assert "voters" in filtered
     
     def test_invalid_agent_raises_error(self, file_manager):
         """Test that invalid agent name raises ValueError."""

@@ -50,7 +50,8 @@ class Config:
     max_tokens_debator: int = 4096
     max_tokens_judge: int = 2048
     max_tokens_factchecker: int = 1024
-    max_tokens_crowd: int = 1024
+    max_tokens_crowd: int = 100
+    max_tokens_crowd_journal: int = 240
     
     # Logging
     log_level: str = "INFO"
@@ -137,6 +138,7 @@ class Config:
             max_tokens_judge=int(os.getenv("MAX_TOKENS_JUDGE", "2048")),
             max_tokens_factchecker=int(os.getenv("MAX_TOKENS_FACTCHECKER", "1024")),
             max_tokens_crowd=int(os.getenv("MAX_TOKENS_CROWD", "100")),
+            max_tokens_crowd_journal=int(os.getenv("MAX_TOKENS_CROWD_JOURNAL", "240")),
             # Other settings
             log_level=os.getenv("LOG_LEVEL", "INFO"),
             cost_budget=cost_budget,

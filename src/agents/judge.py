@@ -80,12 +80,15 @@ class JudgeAgent(Agent):
                 round_number=context.round_number
             )
 
+            total_consensus = len(analysis.get("previous_consensus", [])) + len(analysis.get("new_consensus", []))
             return self.create_response(
                 success=True,
                 output=analysis,
                 file_updates=[file_update],
                 metadata={
-                    "consensus_count": len(analysis.get("consensus", [])),
+                    "previous_consensus_count": len(analysis.get("previous_consensus", [])),
+                    "new_consensus_count": len(analysis.get("new_consensus", [])),
+                    "total_consensus_count": total_consensus,
                     "frontier_count": len(analysis.get("disagreement_frontier", []))
                 }
             )
@@ -122,11 +125,20 @@ class JudgeAgent(Agent):
             from src.utils.json_parser import parse_json_response
             analysis = parse_json_response(response)
 
-            # Validate structure
-            if "consensus" not in analysis or not isinstance(analysis.get("consensus"), list):
-                analysis["consensus"] = []
+            # Validate structure - handle both old and new format
+            if "previous_consensus" not in analysis or not isinstance(analysis.get("previous_consensus"), list):
+                analysis["previous_consensus"] = []
+            if "new_consensus" not in analysis or not isinstance(analysis.get("new_consensus"), list):
+                # Backward compatibility: if old "consensus" key exists, treat all as new
+                if "consensus" in analysis and isinstance(analysis["consensus"], list):
+                    analysis["new_consensus"] = analysis.pop("consensus")
+                else:
+                    analysis["new_consensus"] = []
             if "disagreement_frontier" not in analysis or not isinstance(analysis.get("disagreement_frontier"), list):
                 analysis["disagreement_frontier"] = []
+
+            # Remove old "consensus" key if present (replaced by previous/new split)
+            analysis.pop("consensus", None)
 
             # Validate each frontier issue has required keys
             cleaned_frontier = []
@@ -140,8 +152,9 @@ class JudgeAgent(Agent):
                 })
             analysis["disagreement_frontier"] = cleaned_frontier
 
-            # Ensure consensus strings
-            analysis["consensus"] = [str(x).strip() for x in analysis["consensus"] if str(x).strip()]
+            # Ensure consensus strings are clean
+            analysis["previous_consensus"] = [str(x).strip() for x in analysis["previous_consensus"] if str(x).strip()]
+            analysis["new_consensus"] = [str(x).strip() for x in analysis["new_consensus"] if str(x).strip()]
 
             return analysis
 
@@ -214,12 +227,19 @@ STYLE / QUALITY CONSTRAINTS
 OUTPUT FORMAT (JSON ONLY)
 Return ONLY a valid JSON object with:
 {
-  "consensus": [string, ...],
+  "previous_consensus": [string, ...],
+  "new_consensus": [string, ...],
   "disagreement_frontier": [
     { "core_issue": string, "a_stance": string, "b_stance": string },
     ...
   ]
 }
+
+IMPORTANT DISTINCTION:
+- "previous_consensus": Consensus points that were ALREADY identified in prior rounds (carry forward unchanged)
+- "new_consensus": Consensus points that are NEW in this round (not previously identified)
+- For the FIRST round of analysis (no prior history), put ALL consensus points in "new_consensus" and leave "previous_consensus" empty.
+
 Do not output any additional keys or commentary."""
 
     def _build_analysis_prompt(self, context: AgentContext) -> str:
@@ -265,10 +285,14 @@ TOPIC: {context.topic}
         if latent.get("round_history"):
             latest = latent["round_history"][-1]
             
-            # Show previous consensus to track growth
-            if latest.get("consensus"):
-                prompt += "\n--- PREVIOUS CONSENSUS (FOR REFERENCE) ---\n"
-                for consensus_point in latest["consensus"]:
+            # Show previous consensus (combined from previous + new of last round)
+            all_prev_consensus = latest.get("consensus", [])
+            if not all_prev_consensus:
+                all_prev_consensus = latest.get("previous_consensus", []) + latest.get("new_consensus", [])
+            
+            if all_prev_consensus:
+                prompt += "\n--- PREVIOUS CONSENSUS (carry these forward into 'previous_consensus') ---\n"
+                for consensus_point in all_prev_consensus:
                     prompt += f"- {consensus_point}\n"
                 prompt += "\n"
             
@@ -280,11 +304,11 @@ TOPIC: {context.topic}
                 prompt += "\n"
             
             prompt += "IMPORTANT: This is a NEW analysis based on ALL statements in the transcript above.\n\n"
-            prompt += "For CONSENSUS:\n"
-            prompt += "- Include ALL consensus points (both previous and newly established)\n"
-            prompt += "- Explicitly identify NEW consensus points that emerged in the current round\n"
-            prompt += "- Consensus should GROW over time as both sides find common ground\n"
-            prompt += "- If new statements reveal agreement on something not previously identified, ADD it\n\n"
+            prompt += "For CONSENSUS - SEPARATE previous from new:\n"
+            prompt += "- 'previous_consensus': Carry forward the consensus points listed above that still hold\n"
+            prompt += "- 'new_consensus': Identify ONLY NEW consensus points that emerged in the CURRENT round\n"
+            prompt += "- If a previous consensus point is no longer valid, drop it from 'previous_consensus'\n"
+            prompt += "- Consensus should GROW over time - actively look for NEW agreement\n\n"
             prompt += "For DISAGREEMENT FRONTIER:\n"
             prompt += "- Update stances to reflect NEW arguments and evidence presented in the most recent statements\n"
             prompt += "- Add NEW issues if new substantive disagreements emerged\n"
@@ -296,18 +320,22 @@ TOPIC: {context.topic}
 YOUR TASK:
 Analyze the debate and return a JSON object with:
 
-1. "consensus": Array of strings (points both sides agree on)
-   - Include ALL consensus points identified so far (cumulative list)
-   - Explicitly identify NEW consensus points that emerged in the current round
-   - Consensus should GROW over time as both sides find common ground
-   - Look for: shared acknowledgments, mutual concerns, agreed-upon constraints, convergent views
+1. "previous_consensus": Array of strings - consensus points ALREADY identified in prior rounds
+   - Carry forward consensus points from the previous analysis that still hold
+   - If a prior consensus point is no longer valid, DROP it from this list
+
+2. "new_consensus": Array of strings - NEW consensus points identified in THIS round
+   - Points of agreement that were NOT in the previous consensus
+   - Look for: new shared acknowledgments, mutual concerns, agreed-upon constraints
+   - If this is the first analysis (no prior history), put ALL consensus points here
    
-2. "disagreement_frontier": Array of objects with:
+3. "disagreement_frontier": Array of objects with:
    - "core_issue": The contested topic
    - "a_stance": Team a's position on this issue (reflect their LATEST arguments)
    - "b_stance": Team b's position on this issue (reflect their LATEST arguments)
 
 CRITICAL: This is a FRESH analysis of the ENTIRE transcript above.
+- CLEARLY SEPARATE previous consensus from new consensus discovered in this round
 - Look for NEW arguments, evidence, or examples introduced in recent statements
 - Update stances to include the most recent and complete positions from each side
 - Add new issues if new substantive disagreements emerged
@@ -329,15 +357,20 @@ Return JSON now:"""
         Create file update for debate_latent.json.
 
         Args:
-            analysis: Judge's analysis
+            analysis: Judge's analysis (with previous_consensus and new_consensus)
             round_number: Current round number
 
         Returns:
             FileUpdate object
         """
+        previous_consensus = analysis.get("previous_consensus", [])
+        new_consensus = analysis.get("new_consensus", [])
+
         round_entry = {
             "round_number": round_number,
-            "consensus": analysis.get("consensus", []),
+            "previous_consensus": previous_consensus,
+            "new_consensus": new_consensus,
+            "consensus": previous_consensus + new_consensus,
             "disagreement_frontier": analysis.get("disagreement_frontier", []),
             "analyzed_at": datetime.now().isoformat()
         }
@@ -362,9 +395,9 @@ Return JSON now:"""
         """
         import re
 
-        analysis = {"consensus": [], "disagreement_frontier": []}
+        analysis = {"previous_consensus": [], "new_consensus": [], "disagreement_frontier": []}
 
-        # Try to extract consensus points
+        # Try to extract consensus points (treat all as new in fallback)
         consensus_section = re.search(
             r'consensus[:\s]+(.*?)(?:disagreement|frontier|$)',
             response,
@@ -372,7 +405,7 @@ Return JSON now:"""
         )
         if consensus_section:
             points = re.findall(r'[-*•]\s*(.+)', consensus_section.group(1))
-            analysis["consensus"] = [p.strip() for p in points if p.strip()]
+            analysis["new_consensus"] = [p.strip() for p in points if p.strip()]
 
         # Try to extract disagreement frontier
         frontier_section = re.search(

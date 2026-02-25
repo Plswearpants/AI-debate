@@ -51,6 +51,8 @@ class OpenRouterClient:
         self.raw_data_logger = raw_data_logger
         self._current_agent = None  # Set by adapters
         
+        self._last_citations = []
+        
         self.headers = {
             "Authorization": f"Bearer {api_key}",
             "HTTP-Referer": "https://github.com/your-repo",  # Optional
@@ -110,6 +112,11 @@ class OpenRouterClient:
                 
                 result = data["choices"][0]["message"]["content"]
                 
+                # Capture citation URLs from Perplexity models
+                api_citations = data.get("citations", [])
+                if api_citations:
+                    self._last_citations = api_citations
+                
                 # Log the call if logger is available
                 if self.raw_data_logger and self._current_agent:
                     self.raw_data_logger.log_model_call(
@@ -124,6 +131,13 @@ class OpenRouterClient:
                 
                 return result
     
+    def pop_citations(self) -> List[str]:
+        """Retrieve and clear the citation URLs from the last API call.
+        Perplexity models return citation URLs as a top-level array."""
+        citations = self._last_citations
+        self._last_citations = []
+        return citations
+
     async def generate_with_search(
         self,
         prompt: str,
@@ -258,6 +272,7 @@ def create_gemini_adapter(openrouter_client: OpenRouterClient, model: str, perpl
             self.model = model
             self.perplexity_model = perplexity_model  # For web search
             self.agent_name = agent_name
+            self.last_research_citations = []  # Real URLs from Perplexity
         
         async def generate(self, prompt, temperature=0.7, max_tokens=4096, system_prompt=None, system_instruction=None, response_format=None):
             """
@@ -310,24 +325,22 @@ def create_gemini_adapter(openrouter_client: OpenRouterClient, model: str, perpl
             system_prompt = system_instruction
             
             # Use Perplexity model with web search (from config)
-            return await self.client.generate_with_search(
+            result = await self.client.generate_with_search(
                 prompt=prompt,
                 model=self.perplexity_model,
                 temperature=temperature,
                 max_tokens=max_tokens
             )
+            self.last_research_citations = self.client.pop_citations()
+            return result
         
         async def deep_research(self, query, background=True, poll_interval=5, max_wait=300):
             """
-            Simulate deep research using regular model with web search.
-            
-            Note: This won't be as comprehensive as Gemini's native Deep Research,
-            but it's a reasonable approximation using Perplexity via OpenRouter.
+            Simulate deep research using Perplexity via OpenRouter.
+            Citation URLs are captured in self.last_research_citations.
             """
-            # Set agent context for logging
             self.client._current_agent = self.agent_name
             
-            # Use Perplexity model with web search for research
             research_prompt = f"""You are a research assistant. Conduct comprehensive research on:
 
 {query}
@@ -335,12 +348,14 @@ def create_gemini_adapter(openrouter_client: OpenRouterClient, model: str, perpl
 Provide a detailed, well-sourced analysis with specific data points and credible sources.
 Include inline citations and a source list at the end."""
             
-            return await self.client.generate_with_search(
+            result = await self.client.generate_with_search(
                 prompt=research_prompt,
                 model=self.perplexity_model,
                 temperature=0.7,
                 max_tokens=4096
             )
+            self.last_research_citations = self.client.pop_citations()
+            return result
     
     return GeminiAdapter()
 
