@@ -821,6 +821,13 @@ RESEARCH FINDINGS:
                 prompt += f"\n{speaker_label} statement:\n{turn['statement'][:300]}...\n"
             prompt += "\n"
         
+        # Add scoreboard / moderator instructions if present
+        if context.instructions:
+            for line in context.instructions.split("\n"):
+                if line.strip():
+                    prompt += f"{line}\n"
+            prompt += "\n"
+        
         # Add disagreement frontier if available (for rebuttals)
         if statement_type == "rebuttal":
             latent = context.current_state.get("debate_latent", {})
