@@ -110,20 +110,22 @@ class DebatorAgent(Agent):
         4. Create turn update
         """
         research_report = await self._deep_research(context.topic)
+        research_urls = getattr(self.gemini, 'last_research_citations', [])
         sources = self._parse_research_sources(research_report)
         
         statement, supplementary, structured_citations = await self._generate_statement(
             context=context,
             research_report=research_report,
             sources=sources,
-            statement_type="opening"
+            statement_type="opening",
+            research_urls=research_urls
         )
         
         citation_keys = self._extract_citations(statement + supplementary)
         turn_id = f"turn_{context.round_number:03d}_{self.team}"
         file_updates = self._register_citations_from_structured(
             citation_keys, structured_citations, statement,
-            context.round_number, turn_id
+            context.round_number, turn_id, research_urls
         )
         
         turn_data = {
@@ -177,20 +179,22 @@ class DebatorAgent(Agent):
         Uses Deep Research with debate context (Option C: Adversarial research).
         """
         research_report = await self._deep_research_with_context(context)
+        research_urls = getattr(self.gemini, 'last_research_citations', [])
         sources = self._parse_research_sources(research_report)
         
         statement, supplementary, structured_citations = await self._generate_statement(
             context=context,
             research_report=research_report,
             sources=sources,
-            statement_type="rebuttal"
+            statement_type="rebuttal",
+            research_urls=research_urls
         )
         
         citation_keys = self._extract_citations(statement + supplementary)
         turn_id = f"turn_{context.round_number:03d}_{self.team}"
         file_updates = self._register_citations_from_structured(
             citation_keys, structured_citations, statement,
-            context.round_number, turn_id
+            context.round_number, turn_id, research_urls
         )
         
         turn_data = {
@@ -666,7 +670,8 @@ Provide comprehensive analysis with credible sources and specific rebuttals."""
         context: AgentContext,
         research_report: str,
         sources: List[Dict[str, Any]],
-        statement_type: str
+        statement_type: str,
+        research_urls: Optional[List[str]] = None
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         """
         Generate statement using Gemini based on Deep Research report.
@@ -677,7 +682,7 @@ Provide comprehensive analysis with credible sources and specific rebuttals."""
                 source_url, relevant_quote from the LLM's structured output
         """
         system_prompt = self._get_system_prompt(statement_type)
-        user_prompt = self._build_user_prompt(context, research_report, sources, statement_type)
+        user_prompt = self._build_user_prompt(context, research_report, sources, statement_type, research_urls)
         
         schema = get_schema("debator", "statement")
         
@@ -769,7 +774,8 @@ Closing statement guidelines:
         context: AgentContext,
         research_report: str,
         sources: List[Dict[str, Any]],
-        statement_type: str
+        statement_type: str,
+        research_urls: Optional[List[str]] = None
     ) -> str:
         """
         Build user prompt with research and context.
@@ -815,16 +821,29 @@ RESEARCH FINDINGS:
                         prompt += f"  Opponent's stance: {issue.get(f'{opponent_team}_stance', 'N/A')}\n"
                     prompt += "\n"
         
-        # Add sources for citation mapping
+        # Add sources for citation mapping — prefer real URLs from Perplexity
+        if research_urls:
+            prompt += "\n--- SOURCE URLs (from research, indexed by citation number) ---\n"
+            for i, url in enumerate(research_urls, 1):
+                prompt += f"[{i}] → {url}\n"
+            prompt += "\n"
+        
         if sources:
-            prompt += "\n--- AVAILABLE SOURCES FOR CITATIONS ---\n"
+            prompt += "--- AVAILABLE SOURCES FOR CITATIONS ---\n"
             prompt += "IMPORTANT: The research findings above use numbered citations [1], [2], [3], etc.\n"
             prompt += "You MUST map these to the debate citation format below:\n\n"
             
-            for i, source in enumerate(sources[:15], 1):  # Max 15 sources
+            for i, source in enumerate(sources[:15], 1):
+                url = ""
+                if research_urls and i <= len(research_urls):
+                    url = research_urls[i - 1]
+                elif source.get('url'):
+                    url = source['url']
+                
                 prompt += f"[Source {i}] → Use as [{self.team}_{i}]\n"
                 prompt += f"  Maps from research citation [{i}] in the findings above\n"
-                prompt += f"  URL: {source['url']}\n"
+                if url:
+                    prompt += f"  URL: {url}\n"
                 prompt += f"  Title: {source.get('title', 'N/A')}\n"
                 if source.get('snippet'):
                     prompt += f"  Context: {source['snippet'][:150]}...\n"
@@ -971,7 +990,8 @@ Return a JSON object with this structure:
         structured_citations: List[Dict[str, Any]],
         statement_text: str,
         round_number: int,
-        turn_id: str
+        turn_id: str,
+        research_urls: Optional[List[str]] = None
     ) -> List[FileUpdate]:
         """
         Register citations using the debator's structured JSON output.
@@ -996,6 +1016,15 @@ Return a JSON object with this structure:
             source_url = sc.get("source_url", "")
             source_title = sc.get("source_title", "")
             relevant_quote = sc.get("relevant_quote", "")
+            
+            # Resolve real URL: try structured output first, then research_urls by index
+            if not source_url or "scholar.google.com/scholar?q=" in source_url:
+                try:
+                    num = int(citation_key.split("_")[1])
+                    if research_urls and 0 < num <= len(research_urls):
+                        source_url = research_urls[num - 1]
+                except (ValueError, IndexError):
+                    pass
             
             claim_context = self._extract_claim_context(statement_text, citation_key)
             
