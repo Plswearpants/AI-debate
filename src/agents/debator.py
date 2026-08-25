@@ -11,6 +11,7 @@ Responsibilities:
 """
 
 import re
+import codecs
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 
@@ -55,12 +56,17 @@ class DebatorAgent(Agent):
             # Use OpenRouter
             from src.clients.openrouter_client import OpenRouterClient, create_gemini_adapter
             openrouter_client = OpenRouterClient(api_key=config.openrouter_api_key, raw_data_logger=raw_data_logger)
-            self.gemini = create_gemini_adapter(openrouter_client, config.gemini_model, config.perplexity_model, agent_name=f"debator_{team}")
+            self.gemini = create_gemini_adapter(
+                openrouter_client,
+                config.debator_model,
+                config.factchecker_model,
+                agent_name=f"debator_{team}"
+            )
         elif config.gemini_api_key:
             # Use direct Gemini API
             self.gemini = GeminiClient(
                 api_key=config.gemini_api_key,
-                model=config.gemini_model
+                model=config.debator_model
             )
         else:
             raise ValueError(
@@ -132,7 +138,7 @@ class DebatorAgent(Agent):
             "turn_id": turn_id,
             "round_number": context.round_number,
             "round_label": "Opening",
-            "phase": "Phase 1",
+            "phase": context.phase,
             "speaker": self.team,
             "agent": self.name,
             "timestamp": datetime.now().isoformat(),
@@ -201,7 +207,7 @@ class DebatorAgent(Agent):
             "turn_id": turn_id,
             "round_number": context.round_number,
             "round_label": f"Rebuttal {context.round_number - 1}",
-            "phase": "Phase 2",
+            "phase": context.phase,
             "speaker": self.team,
             "agent": self.name,
             "timestamp": datetime.now().isoformat(),
@@ -268,7 +274,7 @@ class DebatorAgent(Agent):
             "turn_id": f"turn_{context.round_number:03d}_{self.team}",
             "round_number": context.round_number,
             "round_label": "Closing",
-            "phase": "Phase 3",
+            "phase": context.phase,
             "speaker": self.team,
             "agent": self.name,
             "timestamp": datetime.now().isoformat(),
@@ -684,12 +690,13 @@ Provide comprehensive analysis with credible sources and specific rebuttals."""
         system_prompt = self._get_system_prompt(statement_type)
         user_prompt = self._build_user_prompt(context, research_report, sources, statement_type, research_urls)
         
-        schema = get_schema("debator", "statement")
+        schema_task = "closing_statement" if statement_type == "closing" else "statement"
+        schema = get_schema("debator", schema_task)
         
         response = await self.gemini.generate(
             prompt=user_prompt,
             system_instruction=system_prompt,
-            temperature=self.config.gemini_temperature,
+            temperature=self.config.debator_temperature,
             max_tokens=self.config.max_tokens_debator,
             response_format=schema
         )
@@ -701,7 +708,7 @@ Provide comprehensive analysis with credible sources and specific rebuttals."""
             main = parsed.get("main_statement", "")
             supplementary = parsed.get("supplementary_material", "")
             structured_citations = parsed.get("citations", [])
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError, TypeError):
             main, supplementary = self._parse_response(response)
         
         return main, supplementary, structured_citations
@@ -828,7 +835,7 @@ RESEARCH FINDINGS:
                 prompt += f"[{i}] → {url}\n"
             prompt += "\n"
         
-        if sources:
+        if sources and statement_type != "closing":
             prompt += "--- AVAILABLE SOURCES FOR CITATIONS ---\n"
             prompt += "IMPORTANT: The research findings above use numbered citations [1], [2], [3], etc.\n"
             prompt += "You MUST map these to the debate citation format below:\n\n"
@@ -849,7 +856,23 @@ RESEARCH FINDINGS:
                     prompt += f"  Context: {source['snippet'][:150]}...\n"
                 prompt += "\n"
         
-        prompt += f"""--- YOUR TASK ---
+        if statement_type == "closing":
+            prompt += f"""--- YOUR TASK ---
+Generate your closing statement for the debate.
+
+Requirements:
+1. Use only prior debate evidence and arguments
+2. Do not introduce new citations or source mappings
+3. Keep the statement persuasive and concise
+
+OUTPUT FORMAT:
+Return a JSON object with this structure:
+{{
+  "main_statement": "Your closing statement",
+  "supplementary_material": "Optional short team note"
+}}"""
+        else:
+            prompt += f"""--- YOUR TASK ---
 Generate your {statement_type} statement for the debate.
 
 CITATION MAPPING (CRITICAL):
@@ -900,6 +923,12 @@ Return a JSON object with this structure:
         Returns:
             Tuple of (main_statement, supplementary_material)
         """
+        # Try to recover from JSON-ish payloads that failed strict parsing.
+        extracted_main = self._extract_json_string_field(response, "main_statement")
+        extracted_supp = self._extract_json_string_field(response, "supplementary_material")
+        if extracted_main is not None:
+            return extracted_main.strip(), (extracted_supp or "").strip()
+
         # Look for markers like "MAIN STATEMENT:" and "SUPPLEMENTARY:"
         if "SUPPLEMENTARY:" in response:
             parts = response.split("SUPPLEMENTARY:", 1)
@@ -910,6 +939,27 @@ Return a JSON object with this structure:
             supplementary = ""
         
         return main, supplementary
+
+    def _extract_json_string_field(self, text: str, field: str) -> Optional[str]:
+        """
+        Best-effort extraction for malformed JSON outputs.
+        
+        Handles common model failure mode where JSON is wrapped in markdown or
+        contains partially escaped content that breaks strict json.loads.
+        """
+        from src.utils.json_parser import strip_markdown_code_blocks
+
+        cleaned = strip_markdown_code_blocks(text)
+        pattern = rf'"{re.escape(field)}"\s*:\s*"((?:[^"\\]|\\.)*)"'
+        match = re.search(pattern, cleaned, re.DOTALL)
+        if not match:
+            return None
+
+        raw_value = match.group(1)
+        try:
+            return codecs.decode(raw_value, "unicode_escape")
+        except Exception:
+            return raw_value.replace("\\n", "\n").replace("\\t", "\t")
     
     def _extract_citations(self, text: str) -> List[str]:
         """

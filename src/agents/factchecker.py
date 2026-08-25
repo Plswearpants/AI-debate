@@ -48,12 +48,16 @@ class FactCheckerAgent(Agent):
             # Use OpenRouter
             from src.clients.openrouter_client import OpenRouterClient, create_perplexity_adapter
             openrouter_client = OpenRouterClient(api_key=config.openrouter_api_key, raw_data_logger=raw_data_logger)
-            self.perplexity = create_perplexity_adapter(openrouter_client, config.perplexity_model, agent_name=f"factchecker_{team}")
+            self.perplexity = create_perplexity_adapter(
+                openrouter_client,
+                config.factchecker_model,
+                agent_name=f"factchecker_{team}"
+            )
         elif config.perplexity_api_key:
             # Use direct Perplexity API
             self.perplexity = PerplexityClient(
                 api_key=config.perplexity_api_key,
-                model=config.perplexity_model
+                model=config.factchecker_model
             )
         else:
             raise ValueError(
@@ -203,7 +207,7 @@ Return JSON: {{"source_credibility_score": <1-10>, "content_correspondence_score
         
         response = await self.perplexity.chat(
             messages=[{"role": "user", "content": prompt}],
-            temperature=self.config.perplexity_temperature,
+            temperature=self.config.factchecker_temperature,
             max_tokens=self.config.max_tokens_factchecker,
             search_recency_filter=None  # Let Perplexity decide
         )

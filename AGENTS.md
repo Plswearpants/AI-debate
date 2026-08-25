@@ -30,28 +30,21 @@ See `README.md` for full usage examples and `CONTRIBUTING.md` for development gu
 
 ### API keys
 
-Running a full debate requires an `OPENROUTER_API_KEY` (or individual Gemini/Claude/Perplexity keys). Unit tests do **not** require API keys — they mock all external calls. Set keys in `.env` (copy from `env.example`).
+Running a full debate requires an `OPENROUTER_API_KEY` (or individual Gemini/Claude/Perplexity keys). Unit tests do **not** require API keys — they mock all external calls. Set keys in `.env` (copy from `.env.example`) and runtime parameters in `config.yaml` (copy from `config.balanced.yaml`).
 
 ### OpenRouter model names (important)
 
-The model names in `env.example` and `README.md` are outdated (e.g. `google/gemini-2.0-flash-exp:free`, `anthropic/claude-3.5-sonnet:free`). These no longer exist on OpenRouter and will cause 404 errors. Use currently available models instead. Known working config as of Feb 2026:
-
-```
-GEMINI_MODEL=google/gemini-2.0-flash-lite-001
-CLAUDE_MODEL=anthropic/claude-3-haiku
-PERPLEXITY_MODEL=perplexity/sonar
-CROWD_MODEL=meta-llama/llama-3.3-70b-instruct:free
-```
+The model names in docs can drift over time. If a model 404s on OpenRouter, update `config.yaml` to a currently available model.
 
 Query available models via `python -c "import requests, os; r=requests.get('https://openrouter.ai/api/v1/models', headers={'Authorization': f'Bearer {os.environ[\"OPENROUTER_API_KEY\"]}'}); [print(m['id']) for m in r.json()['data']]"`.
 
 ### Running a minimal test debate
 
-Use minimal settings to keep costs and time low:
+Use minimal settings to keep costs and time low (in `config.yaml`):
 ```
-NUM_DEBATE_ROUNDS=1
-NUM_VOTERS=3
-DEEP_RESEARCH_ENABLED=false
+debate:
+  num_rounds: 1
+  crowd_size: 3
 ```
 
 ### Flake8 warnings

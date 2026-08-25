@@ -36,11 +36,13 @@ The quality of citations depends heavily on which models you use for research.
 
 For **high-quality, verifiable citations**, use models with real-time web access:
 
-```env
-# .env configuration
-PERPLEXITY_MODEL=perplexity/llama-3.1-sonar-large-128k-online
+```yaml
+# config.yaml
+models:
+  factchecker: perplexity/llama-3.1-sonar-large-128k-online
 # OR
-PERPLEXITY_MODEL=perplexity/llama-3.1-sonar-small-128k-online
+models:
+  factchecker: perplexity/llama-3.1-sonar-small-128k-online
 ```
 
 ### How It Works
@@ -95,15 +97,16 @@ The system handles both cases:
 
 ### Option 1: Use Perplexity for Research (Recommended)
 
-Update your `.env`:
-```env
-# For debator research
-PERPLEXITY_MODEL=perplexity/llama-3.1-sonar-large-128k-online
+Update your `config.yaml`:
+```yaml
+models:
+  # For debator web research + fact-checking
+  factchecker: perplexity/llama-3.1-sonar-large-128k-online
 
-# Keep using free models for other agents if budget-conscious
-GEMINI_MODEL=google/gemini-2.0-flash-exp:free  # Debator statements
-CLAUDE_MODEL=anthropic/claude-3.5-sonnet:free  # Judge analysis
-CROWD_MODEL=meta-llama/llama-3.3-70b-instruct:free  # Crowd voting
+  # Keep using lower-cost models for other roles if budget-conscious
+  debator: google/gemini-2.0-flash-exp:free
+  judge: anthropic/claude-3.5-sonnet:free
+  crowd: meta-llama/llama-3.3-70b-instruct:free
 ```
 
 **Cost**: ~$0.20-0.50 per full debate (research only)
@@ -111,10 +114,11 @@ CROWD_MODEL=meta-llama/llama-3.3-70b-instruct:free  # Crowd voting
 ### Option 2: Use Paid Models Throughout
 
 For maximum quality:
-```env
-GEMINI_MODEL=google/gemini-2.0-flash-thinking-exp  # Deep Research capability
-PERPLEXITY_MODEL=perplexity/llama-3.1-sonar-large-128k-online
-CLAUDE_MODEL=anthropic/claude-3.5-sonnet
+```yaml
+models:
+  debator: google/gemini-2.0-flash-thinking-exp
+  factchecker: perplexity/llama-3.1-sonar-large-128k-online
+  judge: anthropic/claude-3.5-sonnet
 ```
 
 **Cost**: ~$1-3 per full debate

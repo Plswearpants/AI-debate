@@ -16,9 +16,10 @@ python -m venv venv
 source venv/bin/activate  # or `venv\Scripts\activate` on Windows
 pip install -r requirements.txt
 
-# 3. Configure .env (see .env.example)
+# 3. Configure secrets + unified runtime config
 cp .env.example .env
-# Add your OPENROUTER_API_KEY
+cp config.balanced.yaml config.yaml
+# Add your OPENROUTER_API_KEY in .env
 
 # 4. Run tests
 pytest tests/ -v

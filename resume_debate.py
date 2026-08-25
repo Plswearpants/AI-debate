@@ -21,7 +21,7 @@ async def resume_debate(debate_id: str):
     
     # Load config
     try:
-        config = Config.from_env()
+        config = Config.from_files()
         print("✅ Configuration loaded\n")
     except Exception as e:
         print(f"❌ Configuration error: {e}\n")

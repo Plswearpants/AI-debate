@@ -200,6 +200,9 @@ class DebateModerator:
         moderator.logger = DebateLogger(moderator.debate_id, moderator.debate_dir)
         moderator.raw_data_logger = RawDataLogger(moderator.debate_id, str(moderator.debate_dir))
         
+        # Load persisted personas so resumed crowd votes keep persona continuity.
+        moderator._generated_personas = moderator._load_persisted_personas()
+
         moderator.agents = moderator._initialize_agents(
             team_a_stance=checkpoint["state"]["team_assignments"]["team_a"]["stance"],
             team_b_stance=checkpoint["state"]["team_assignments"]["team_b"]["stance"]
@@ -245,7 +248,13 @@ class DebateModerator:
         personas = await self._generate_crowd_personas(self.topic, self.config.crowd_size)
         print(f"✅ Generated {len(personas)} personas with topic-relevant dimensions")
         
-        # Store personas in crowd_opinion for persistence
+        # Store personas in dedicated personas file for persistence.
+        personas_data = self.file_manager._read_json("personas")
+        personas_data["personas"] = personas
+        personas_data["updated_at"] = datetime.now().isoformat()
+        self.file_manager.write_by_moderator("personas", personas_data)
+
+        # Keep a copy in crowd_opinion for backward compatibility.
         crowd_data = self.file_manager._read_json("crowd_opinion")
         crowd_data["personas"] = personas
         self.file_manager.write_by_moderator("crowd_opinion", crowd_data)
@@ -291,7 +300,7 @@ class DebateModerator:
         votes = vote_zero_response.output["votes"]
         avg_score = vote_zero_response.output["average_score"]
         
-        for_count = sum(1 for v in votes if v["score"] > 50)
+        for_count = sum(1 for v in votes if v["score"] > 0)
         against_count = len(votes) - for_count
         
         print(f"   FOR: {for_count} votes")
@@ -344,6 +353,7 @@ class DebateModerator:
             details={"from": "initialization", "to": "opening"},
             state_snapshot=self.state.to_dict()
         )
+        self._update_history_metadata(phase="opening", round_number=self.state.round_number)
         print(f"\n✅ Phase 0 complete\n")
     
     async def _generate_crowd_personas(self, topic: str, crowd_size: int) -> List[Dict[str, Any]]:
@@ -393,7 +403,7 @@ Return a JSON object:
 }}"""
         
         try:
-            model = self.config.gemini_model
+            model = self.config.debator_model
             response = await client.generate(
                 prompt=prompt,
                 model=model,
@@ -466,6 +476,32 @@ Return a JSON object:
                 "dimensions": {}
             })
         return personas
+
+    def _load_persisted_personas(self) -> Optional[List[Dict[str, Any]]]:
+        """
+        Load personas previously generated for this debate.
+
+        Priority:
+        1) personas.json (canonical source)
+        2) crowd_opinion.personas (legacy fallback)
+        """
+        try:
+            personas_data = self.file_manager._read_json("personas")
+            personas = personas_data.get("personas", [])
+            if personas:
+                return personas
+        except Exception:
+            pass
+
+        try:
+            crowd_data = self.file_manager._read_json("crowd_opinion")
+            personas = crowd_data.get("personas", [])
+            if personas:
+                return personas
+        except Exception:
+            pass
+
+        return None
     
     async def _phase_1_opening(self) -> None:
         """
@@ -542,6 +578,7 @@ Return a JSON object:
             details={"from": "opening", "to": "debate_rounds"},
             state_snapshot=self.state.to_dict()
         )
+        self._update_history_metadata(phase="debate_rounds", round_number=self.state.round_number)
         print(f"\n✅ Phase 1 complete\n")
     
     async def _phase_2_debate_rounds(self) -> None:
@@ -628,6 +665,7 @@ Return a JSON object:
             details={"from": "debate_rounds", "to": "closing"},
             state_snapshot=self.state.to_dict()
         )
+        self._update_history_metadata(phase="closing", round_number=self.state.round_number)
         print(f"\n✅ Phase 2 complete\n")
     
     async def _phase_3_closing(self) -> None:
@@ -712,6 +750,7 @@ Return a JSON object:
             details={"from": "closing", "to": "completed"},
             state_snapshot=self.state.to_dict()
         )
+        self._update_history_metadata(phase="completed", round_number=self.state.round_number)
         self._save_checkpoint()
         
         print(f"\n✅ Phase 3 complete\n")
@@ -1065,14 +1104,14 @@ Return a JSON object:
                 return ""
 
             latest = vote_rounds[-1]
-            avg = latest.get("average_score", 50)
+            avg = latest.get("average_score", 0)
             count = latest.get("vote_count", 0)
-            favor_a = sum(1 for v in crowd_data.get("voters", []) if v.get("current_score", 50) > 50)
+            favor_a = sum(1 for v in crowd_data.get("voters", []) if v.get("current_score", 0) > 0)
             favor_b = count - favor_a
 
             lines = [
                 "📊 CROWD SCOREBOARD:",
-                f"  Latest avg: {avg:.1f}/100 ({'leans Team A' if avg > 50 else 'leans Team B'})",
+                f"  Latest avg: {avg:.1f}/50 ({'leans Team A' if avg > 0 else ('leans Team B' if avg < 0 else 'neutral')})",
                 f"  Favor Team A: {favor_a} | Favor Team B: {favor_b}",
             ]
 
@@ -1119,6 +1158,18 @@ Return a JSON object:
             return True
         
         return False
+
+    def _update_history_metadata(self, phase: str, round_number: int) -> None:
+        """Persist high-level debate progress into history_chat metadata."""
+        try:
+            history = self.file_manager._read_json("history_chat")
+            metadata = history.setdefault("metadata", {})
+            metadata["phase"] = phase
+            metadata["current_round"] = round_number
+            self.file_manager.write_by_moderator("history_chat", history)
+        except Exception:
+            # Metadata sync should never break debate execution.
+            pass
     
     def _calculate_cost_by_agent(self) -> Dict[str, float]:
         """
@@ -1193,7 +1244,7 @@ Return a JSON object:
         # Public transcript contains main statements
         for turn in history.get("public_transcript", []):
             speaker = turn.get("speaker", "unknown")
-            round_num = turn.get("round", 0)
+            round_num = turn.get("round_number", turn.get("round", 0))
             phase = turn.get("phase", "unknown")
             statement = turn.get("statement", turn.get("main_statement", ""))
             
@@ -1217,7 +1268,7 @@ Return a JSON object:
                         supp = note.get("supplementary_material", "")
                         if supp:
                             lines.append(f"<details>")
-                            lines.append(f"<summary>Round {note.get('round', 0)}</summary>")
+                            lines.append(f"<summary>Round {note.get('round_number', note.get('round', 0))}</summary>")
                             lines.append(f"")
                             lines.append(supp)
                             lines.append(f"</details>")

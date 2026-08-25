@@ -1,0 +1,157 @@
+# ============================================================================
+# AI DEBATE PLATFORM - UNIFIED CONFIGURATION
+# ============================================================================
+# All debate parameters are configured here
+# API keys are stored separately in .env file
+#
+# Last Updated: 2026-02-24
+# ============================================================================
+
+# ============================================================================
+# DEBATE SETTINGS
+# ============================================================================
+
+debate:
+  # Number of rebuttal rounds (after opening statements)
+  # 0 = Opening + Closing only
+  # 1 = Opening + 1 Rebuttal + Closing
+  # 2 = Opening + 2 Rebuttals + Closing
+  num_rounds: 1
+  
+  # Number of voters in the crowd
+  crowd_size: 12
+  
+  # Resource multiplier threshold (0.0-1.0)
+  # When vote bias exceeds this threshold, losing team gets resource boost
+  # Example: 0.6 means if 60% favor one side, other side gets 1.5x tokens
+  resource_multiplier_threshold: 0.6
+
+# ============================================================================
+# MODEL CONFIGURATION
+# ============================================================================
+
+models:
+  # Model IDs by agent role
+  debator: "google/gemini-2.5-flash"
+  judge: "anthropic/claude-3.5-sonnet"
+  factchecker: "perplexity/sonar"
+  crowd: "meta-llama/llama-3.3-70b-instruct"
+  
+  # Use OpenRouter for crowd voting (recommended for batch processing)
+  use_openrouter_for_crowd: true
+
+# ============================================================================
+# GENERATION PARAMETERS
+# ============================================================================
+
+generation:
+  # Crowd voting context mode:
+  # - full_transcript: each voter sees full public transcript
+  # - latest_plus_latent: each voter sees latest A/B statements + judge latent map
+  crowd_context_mode: "full_transcript"
+
+  # Temperature controls randomness/creativity (0.0-1.0)
+  # Lower = more deterministic, Higher = more creative
+  temperature:
+    debator: 0.7      # Debators (creative arguments)
+    judge: 0.3        # Judge (consistent analysis)
+    factchecker: 0.2  # Fact-checkers (factual verification)
+    crowd: 0.8       # Voters (diverse opinions)
+  
+  # Maximum output tokens per agent
+  max_tokens:
+    debator: 4096
+    judge: 2048
+    factchecker: 1024
+    crowd: 512
+    crowd_journal: 1024
+
+# ============================================================================
+# RESEARCH SETTINGS
+# ============================================================================
+
+research:
+  # Enable deep research for debators (high quality but expensive)
+  # true = Use Gemini Deep Research (~$2-3 per call)
+  # false = Use quick search (~$0.10 per call)
+  deep_research_enabled: false
+  
+  # Cost controls for research
+  max_cost_per_research: 0.50      # Maximum cost per research call (USD)
+  max_grounding_queries: 10       # Maximum web search queries per research
+  max_context_tokens: 100000      # Stay below 200k token cliff
+  max_output_tokens: 8000        # Limit output length
+  max_research_time: 180          # Maximum research time (seconds)
+  
+  # Fallback threshold
+  # When remaining budget falls below this, use quick search instead
+  quick_search_threshold: 1.0     # USD
+
+# ============================================================================
+# BUDGET CONTROLS
+# ============================================================================
+
+budget:
+  # Maximum total cost for entire debate (USD)
+  max_cost_per_debate: 5.0
+  
+  # Maximum number of deep research calls allowed
+  # Each deep research call is expensive (~$2-3)
+  # Typical: 2 for opening, 2 per rebuttal round
+  max_deep_research_calls: 4
+  
+  # Enable budget enforcement
+  # true = Stop or fallback when budget reached
+  # false = Allow unlimited spending (USE WITH CAUTION)
+  enforce_budget: true
+
+# ============================================================================
+# LOGGING
+# ============================================================================
+
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR
+  level: "INFO"
+  
+  # Enable raw model call logging (useful for debugging)
+  log_raw_calls: true
+
+# ============================================================================
+# ADVANCED SETTINGS
+# ============================================================================
+
+advanced:
+  # Enable cost prediction before running debate
+  # Shows estimated cost and prompts for confirmation
+  enable_cost_prediction: false
+  
+  # Checkpoint frequency
+  # Save after expensive operations for crash recovery
+  checkpoint_after:
+    - "vote_0"
+    - "debator_turns"
+    - "round_complete"
+    - "phase_transition"
+
+# ============================================================================
+# NOTES
+# ============================================================================
+#
+# Cost Estimates:
+# - Opening only (0 rounds):     $0.50-2.00 (quick) or $4-6 (deep)
+# - Opening + 1 round:           $3-5 (with budget controls)
+# - Opening + 2 rounds:          $5-10 (with budget controls)
+#
+# Quality vs Cost Trade-offs:
+# - deep_research_enabled=false  → Low cost, basic quality
+# - deep_research_enabled=true   → Higher cost, better citations
+# - More rounds                  → Higher cost, more thorough debate
+# - Larger crowd                 → Slightly higher cost, more diverse
+#
+# Model Selection:
+# - Gemini: Best for research and argumentation
+# - Claude: Best for neutral judging
+# - Perplexity: Best for fact-checking with web search
+# - Llama: Cost-effective for batch voting
+#
+# ============================================================================

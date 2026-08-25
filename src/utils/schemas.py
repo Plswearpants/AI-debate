@@ -50,6 +50,22 @@ DEBATOR_STATEMENT_SCHEMA = {
     "required": ["main_statement", "citations"]
 }
 
+# Schema for Debator Closing Output (no citation mapping required)
+DEBATOR_CLOSING_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "main_statement": {
+            "type": "string",
+            "description": "The final closing statement visible to audience."
+        },
+        "supplementary_material": {
+            "type": "string",
+            "description": "Optional brief internal note."
+        }
+    },
+    "required": ["main_statement"]
+}
+
 
 # Schema for Judge Analysis Output
 JUDGE_ANALYSIS_SCHEMA = {
@@ -109,9 +125,9 @@ CROWD_VOTE_SCHEMA = {
     "properties": {
         "score": {
             "type": "integer",
-            "minimum": 0,
-            "maximum": 100,
-            "description": "Vote score (0-100)"
+            "minimum": -50,
+            "maximum": 50,
+            "description": "Vote score (-50 to 50; negative favors Team B, positive favors Team A)"
         },
         "reasoning": {
             "type": "string",
@@ -136,6 +152,7 @@ def get_schema(agent_type: str, task_type: str = "default") -> Dict[str, Any]:
     schemas = {
         "debator": {
             "statement": DEBATOR_STATEMENT_SCHEMA,
+            "closing_statement": DEBATOR_CLOSING_SCHEMA,
             "default": DEBATOR_STATEMENT_SCHEMA
         },
         "judge": {

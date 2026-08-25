@@ -8,34 +8,27 @@ An AI-driven debate platform that simulates high-fidelity, text-based argumentat
 
 ## ⚡ Quick Start
 
-### Option 1: OpenRouter (Recommended - Easiest Setup)
+The project now uses **two config files**:
+- `.env` for API keys only
+- `config.yaml` for all runtime parameters
 
 ```bash
-# 1. Get API key: https://openrouter.ai/keys (free tier available)
+# 1) Create secrets file
+copy .env.example .env
+# then edit .env and set OPENROUTER_API_KEY
 
-# 2. Create .env file:
-echo "OPENROUTER_API_KEY=sk-or-v1-your-key-here" > .env
-echo "USE_OPENROUTER_FOR_CROWD=true" >> .env
-echo "GEMINI_MODEL=google/gemini-2.0-flash-exp:free" >> .env
-echo "CLAUDE_MODEL=anthropic/claude-3.5-sonnet:free" >> .env
-echo "PERPLEXITY_MODEL=perplexity/llama-3.1-sonar-small-128k-online" >> .env
-echo "CROWD_MODEL=meta-llama/llama-3.3-70b-instruct:free" >> .env
-echo "NUM_DEBATE_ROUNDS=2" >> .env
-echo "NUM_VOTERS=10" >> .env
+# 2) Create unified runtime config
+copy config.balanced.yaml config.yaml
 
-# 3. Install dependencies
+# 3) Install dependencies
 pip install -r requirements.txt
 
-# 4. Test configuration
-python test_openrouter.py
+# 4) Verify config
+python verify_model_config.py
 
-# 5. Run your first debate!
+# 5) Run debate
 python run_debate.py "Should universal basic income be implemented?"
 ```
-
-### Option 2: Direct API Keys (More Control)
-
-See [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) for setup with individual API keys (Gemini, Claude, Perplexity).
 
 ---
 
@@ -123,64 +116,44 @@ Plus internal files:
 
 ## 🔧 Configuration
 
-### Environment Variables (`.env`)
-
-**Essential:**
+### `.env` (secrets only)
 ```env
-OPENROUTER_API_KEY=sk-or-v1-...      # Required: OpenRouter API key
+OPENROUTER_API_KEY=sk-or-v1-...
 ```
 
-**Models (all optional, defaults to free tier):**
-```env
-GEMINI_MODEL=google/gemini-2.0-flash-exp:free
-CLAUDE_MODEL=anthropic/claude-3.5-sonnet:free
-PERPLEXITY_MODEL=perplexity/llama-3.1-sonar-small-128k-online
-CROWD_MODEL=meta-llama/llama-3.3-70b-instruct:free
+### `config.yaml` (all runtime settings)
+```yaml
+debate:
+  num_rounds: 1
+  crowd_size: 10
+
+models:
+  debator: "google/gemini-2.5-flash"
+  judge: "anthropic/claude-3.5-sonnet"
+  factchecker: "perplexity/sonar"
+  crowd: "meta-llama/llama-3.3-70b-instruct"
+
+budget:
+  max_cost_per_debate: 5.0
 ```
 
-**Debate Settings:**
-```env
-NUM_DEBATE_ROUNDS=2                  # Number of rebuttal rounds (default: 2)
-NUM_VOTERS=10                        # Crowd size (default: 10)
-DEBATE_BUDGET_USD=5.00               # Max cost per debate (default: 5.00)
-```
-
-**Advanced:**
-```env
-USE_OPENROUTER_FOR_CROWD=true        # Use OpenRouter for crowd (recommended)
-DEEP_RESEARCH_ENABLED=true           # Enable research phase (default: true)
-```
-
-See [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) for complete configuration options.
+Use templates:
+- `config.conservative.yaml`
+- `config.balanced.yaml`
+- `config.premium.yaml`
 
 ---
 
 ## 📚 Documentation
 
-### Getting Started
-- **[DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)** - Complete setup guide (all deployment options)
-- **[CHANGELOG.md](CHANGELOG.md)** - Recent fixes and changes
+Keep the active docs minimal:
 
-### Technical Reference
+- **[DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)** - Setup and configuration
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - System design and data flow
-- **[AGENTS_COMPLETE.md](AGENTS_COMPLETE.md)** - Agent implementation details
-- **[MODERATOR_COMPLETE.md](MODERATOR_COMPLETE.md)** - Orchestration engine
+- **[CITATION_QUALITY.md](CITATION_QUALITY.md)** - Citation behavior and quality tuning
+- **[CHANGELOG.md](CHANGELOG.md)** - Recent changes
 
-### Guides
-- **[CITATION_QUALITY.md](CITATION_QUALITY.md)** - Understanding citation behavior with different models
-- **[RAW_DATA_LOGGING.md](RAW_DATA_LOGGING.md)** - Troubleshooting with raw LLM logs
-- **[LOGGING_GUIDE.md](LOGGING_GUIDE.md)** - Debate logging system
-- **[COST_CONTROLS.md](COST_CONTROLS.md)** - Budget management
-
-### API Specs
-- **[ADAPTER_INTERFACE_SPEC.md](ADAPTER_INTERFACE_SPEC.md)** - OpenRouter adapter specifications
-
-### Planning
-- **[MVP.md](MVP.md)** - Product specification
-- **[ROADMAP.md](ROADMAP.md)** - Future development plans
-
-### Index
-- **[DOCUMENTATION_INDEX.md](DOCUMENTATION_INDEX.md)** - Complete documentation map
+Historical/legacy notes are retained in other markdown files as reference only.
 
 ---
 
@@ -193,8 +166,8 @@ python run_debate.py "Should universal basic income be implemented?"
 
 ### Longer Debate (more rounds)
 ```bash
-# Set NUM_DEBATE_ROUNDS=5 in .env
-python run_debate.py "Should we ban social media for children under 16?" 5
+# edit config.yaml -> debate.num_rounds: 5
+python run_debate.py "Should we ban social media for children under 16?"
 ```
 
 ### Resume Failed Debate

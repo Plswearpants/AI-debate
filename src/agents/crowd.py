@@ -37,7 +37,7 @@ class CrowdAgent(Agent):
         if config.use_openrouter_for_crowd and config.openrouter_api_key:
             from src.clients.openrouter_client import OpenRouterClient, create_lambda_adapter
             openrouter_client = OpenRouterClient(api_key=config.openrouter_api_key, raw_data_logger=raw_data_logger)
-            self.lambda_client = create_lambda_adapter(openrouter_client, config.lambda_model, agent_name="crowd")
+            self.lambda_client = create_lambda_adapter(openrouter_client, config.crowd_model, agent_name="crowd")
         elif config.lambda_gpu_endpoint:
             self.lambda_client = LambdaGPUClient(
                 endpoint=config.lambda_gpu_endpoint,
@@ -53,7 +53,8 @@ class CrowdAgent(Agent):
         if personas:
             self.personas = personas
         else:
-            self.personas = self._load_personas(config.crowd_size)
+            persisted_personas = self._load_persisted_personas()
+            self.personas = persisted_personas or self._load_personas(config.crowd_size)
 
     async def execute_turn(self, context: AgentContext) -> AgentResponse:
         try:
@@ -61,10 +62,11 @@ class CrowdAgent(Agent):
                 return await self._execute_vote_zero(context)
             return await self._execute_two_pass_vote(context)
         except Exception as e:
+            error_detail = str(e).strip() or repr(e)
             return self.create_response(
                 success=False,
                 output={},
-                errors=[f"Crowd voting failed: {str(e)}"]
+                errors=[f"Crowd voting failed: {error_detail}"]
             )
 
     # ------------------------------------------------------------------
@@ -121,14 +123,18 @@ class CrowdAgent(Agent):
         for persona, resp in zip(self.personas, score_responses):
             scores[persona["id"]] = self._extract_score(resp, persona)
 
-        # --- Pass 2: Journal entry (token budget scales with score change) ---
-        journal_prompts = []
-        journal_token_limits = []
+        # --- Pass 2: Journal entry only for final vote or large deltas (>10) ---
+        is_final_vote = "cast final vote on overall debate" in (context.instructions or "").lower()
+        journal_targets: List[Dict[str, Any]] = []
         for p in self.personas:
             vid = p["id"]
             vd = voter_data.get(vid, {})
             prev = vd.get("current_score") if vd else None
             change = abs(scores[vid] - prev) if prev is not None else 0
+
+            should_write_journal = is_final_vote or change > 10
+            if not should_write_journal:
+                continue
 
             if change >= 25:
                 token_limit = 240
@@ -139,37 +145,48 @@ class CrowdAgent(Agent):
             else:
                 token_limit = 60
 
-            journal_prompts.append(
-                self._build_journal_prompt(p, context, scores[vid], vd)
-            )
-            journal_token_limits.append(token_limit)
+            journal_targets.append({
+                "persona": p,
+                "token_limit": token_limit,
+                "prompt": self._build_journal_prompt(p, context, scores[vid], vd),
+            })
 
-        max_journal_tokens = max(journal_token_limits) if journal_token_limits else 80
-        journal_responses = await self.lambda_client.generate_batch(
-            prompts=journal_prompts,
-            temperature=self.config.crowd_temperature,
-            max_tokens=max_journal_tokens
-        )
+        journal_text_by_voter: Dict[str, str] = {}
+        if journal_targets:
+            max_journal_tokens = max(t["token_limit"] for t in journal_targets)
+            journal_responses = await self.lambda_client.generate_batch(
+                prompts=[t["prompt"] for t in journal_targets],
+                temperature=self.config.crowd_temperature,
+                max_tokens=max_journal_tokens
+            )
+            for target, journal_resp in zip(journal_targets, journal_responses):
+                persona = target["persona"]
+                token_limit = target["token_limit"]
+                char_limit = token_limit * 4
+                journal_text_by_voter[persona["id"]] = self._truncate_at_sentence(
+                    journal_resp.strip(),
+                    char_limit
+                )
 
         # --- Combine into votes ---
         votes = []
-        for persona, journal_resp, token_limit in zip(self.personas, journal_responses, journal_token_limits):
+        for persona in self.personas:
             vid = persona["id"]
             score = scores[vid]
-            char_limit = token_limit * 4
-            journal_text = self._truncate_at_sentence(journal_resp.strip(), char_limit)
+            journal_text = journal_text_by_voter.get(vid, "")
 
             vd = voter_data.get(vid, {})
             prev_score = vd.get("current_score")
             vote_label = context.instructions or f"Round {context.round_number}"
 
-            journal_header = f"## {vote_label} | Score: {score}"
-            if prev_score is not None:
-                delta = score - prev_score
-                direction = "↑" if delta > 0 else ("↓" if delta < 0 else "→")
-                journal_header += f" ({direction}{abs(delta)} from {prev_score})"
-
-            full_entry = f"{journal_header}\n{journal_text}"
+            full_entry = None
+            if journal_text:
+                journal_header = f"## {vote_label} | Score: {score}"
+                if prev_score is not None:
+                    delta = score - prev_score
+                    direction = "↑" if delta > 0 else ("↓" if delta < 0 else "→")
+                    journal_header += f" ({direction}{abs(delta)} from {prev_score})"
+                full_entry = f"{journal_header}\n{journal_text}"
 
             votes.append({
                 "voter_id": vid,
@@ -177,8 +194,8 @@ class CrowdAgent(Agent):
                 "persona_description": persona.get("life_experience", persona.get("description", "")),
                 "persona_type": persona.get("type", "general"),
                 "score": score,
-                "rationale": journal_text[:200],
-                "journal_entry": full_entry
+                "rationale": (journal_text[:200] if journal_text else f"Score update: {score}"),
+                **({"journal_entry": full_entry} if full_entry else {})
             })
 
         file_update = self._create_crowd_update(votes, context.round_number)
@@ -205,15 +222,16 @@ Topic: {context.topic}
 
 This is the initial vote BEFORE any debate arguments. Based on your life experience and values, what is your initial stance on this topic?
 
-**SCORING SCHEME (1-100):**
-• 1-50: AGAINST the proposal (oppose it)
-  - 1-25: Strongly against
-  - 26-50: Moderately against
-• 51-100: FOR the proposal (support it)
-  - 51-75: Moderately for
-  - 76-100: Strongly for
+**SCORING SCHEME (-50 to 50):**
+• -50 to -1: AGAINST the proposal (oppose it)
+  - -50 to -26: Strongly against
+  - -25 to -1: Moderately against
+• 0: Neutral / undecided
+• 1 to 50: FOR the proposal (support it)
+  - 1 to 25: Moderately for
+  - 26 to 50: Strongly for
 
-Return JSON: {{"score": <1-100>, "reasoning": "<brief explanation of your initial stance>"}}"""
+Return JSON: {{"score": <-50 to 50>, "reasoning": "<brief explanation of your initial stance>"}}"""
 
     def _build_score_prompt(
         self,
@@ -238,15 +256,7 @@ Return JSON: {{"score": <1-100>, "reasoning": "<brief explanation of your initia
                 )
 
         public_transcript = context.current_state.get("history_chat", {}).get("public_transcript", [])
-        last_a = ""
-        last_b = ""
-        for turn in reversed(public_transcript):
-            if turn.get("speaker") == "a" and not last_a:
-                last_a = turn.get("statement", "")
-            elif turn.get("speaker") == "b" and not last_b:
-                last_b = turn.get("statement", "")
-            if last_a and last_b:
-                break
+        mode = getattr(self.config, "crowd_context_mode", "full_transcript")
 
         prompt = f"""You are: {persona['name']}
 {life_exp}
@@ -261,13 +271,67 @@ YOUR PERSONAL JOURNAL (your thoughts so far):
 
 """
 
-        prompt += f"""Team A's latest argument:
-{last_a[:500] if last_a else 'No statement yet'}
+        if mode == "full_transcript":
+            transcript_chunks: List[str] = []
+            for turn in public_transcript:
+                speaker = str(turn.get("speaker", "?")).upper()
+                round_label = turn.get("round_label") or f"Round {turn.get('round_number', '?')}"
+                statement = (turn.get("statement", "") or "").strip()
+                if not statement:
+                    continue
+                transcript_chunks.append(f"[{round_label}] Team {speaker}:\n{statement}")
+
+            if transcript_chunks:
+                prompt += "FULL PUBLIC TRANSCRIPT SO FAR:\n\n"
+                prompt += "\n\n".join(transcript_chunks)
+                prompt += "\n\n"
+            else:
+                prompt += "No public transcript is available yet.\n\n"
+        else:
+            # latest_plus_latent: lower token mode using freshest statements + judge latent map
+            last_a = ""
+            last_b = ""
+            for turn in reversed(public_transcript):
+                if turn.get("speaker") == "a" and not last_a:
+                    last_a = (turn.get("statement", "") or "").strip()
+                elif turn.get("speaker") == "b" and not last_b:
+                    last_b = (turn.get("statement", "") or "").strip()
+                if last_a and last_b:
+                    break
+
+            prompt += f"""Team A's latest argument:
+{last_a if last_a else 'No statement yet'}
 
 Team B's latest argument:
-{last_b[:500] if last_b else 'No statement yet'}
+{last_b if last_b else 'No statement yet'}
 
 """
+
+            debate_latent = context.current_state.get("debate_latent", {})
+            round_history = debate_latent.get("round_history", [])
+            if round_history:
+                latest_latent = round_history[-1]
+                consensus = latest_latent.get("consensus", [])
+                frontier = latest_latent.get("disagreement_frontier", [])
+
+                if consensus:
+                    prompt += "JUDGE CONSENSUS SNAPSHOT:\n"
+                    for point in consensus[-6:]:
+                        prompt += f"- {point}\n"
+                    prompt += "\n"
+
+                if frontier:
+                    prompt += "JUDGE DISAGREEMENT FRONTIER:\n"
+                    for issue in frontier[-5:]:
+                        core = issue.get("core_issue", "Unknown issue")
+                        a_stance = issue.get("a_stance", "")
+                        b_stance = issue.get("b_stance", "")
+                        prompt += (
+                            f"- {core}\n"
+                            f"  Team A: {a_stance}\n"
+                            f"  Team B: {b_stance}\n"
+                        )
+                    prompt += "\n"
         if vote_history_text:
             prompt += f"{vote_history_text}\n"
         if baseline_score is not None:
@@ -276,7 +340,7 @@ Team B's latest argument:
             prompt += f"Your most recent score: {prev_score}\n"
 
         prompt += """
-**SCORING (1-100):** 1-50 = favor Team B, 51-100 = favor Team A.
+**SCORING (-50 to 50):** -50 to -1 = favor Team B, 0 = neutral, 1 to 50 = favor Team A.
 
 CONSISTENCY RULE: You are the same person throughout this debate. Your score should only change if a specific argument or evidence justifies it. Random swings are not allowed.
 
@@ -315,7 +379,7 @@ Respond with ONLY a single integer (your score). Nothing else."""
         prompt = f"""You are: {persona['name']}
 {life_exp}
 
-You just scored this debate round: {new_score}/100 (1-50 = favor Team B, 51-100 = favor Team A).
+You just scored this debate round: {new_score} (scale: -50 to 50; negative = favor Team B, positive = favor Team A, 0 = neutral).
 """
         if baseline_score is not None:
             prompt += f"Your baseline (pre-debate) score was: {baseline_score}\n"
@@ -360,28 +424,28 @@ Journal entry:"""
         # Try direct integer parse
         try:
             score = int(text)
-            return max(1, min(100, score))
+            return max(-50, min(50, score))
         except ValueError:
             pass
 
         # Try to find a number in the response
-        match = re.search(r'\b(\d{1,3})\b', text)
+        match = re.search(r'(?<!\d)-?\d{1,3}(?!\d)', text)
         if match:
-            score = int(match.group(1))
-            if 1 <= score <= 100:
+            score = int(match.group(0))
+            if -50 <= score <= 50:
                 return score
 
         # Try JSON parse
         try:
             from src.utils.json_parser import parse_json_response
             data = parse_json_response(text)
-            score = data.get("score", 50)
-            return max(1, min(100, int(score)))
+            score = data.get("score", 0)
+            return max(-50, min(50, int(score)))
         except (json.JSONDecodeError, ValueError, TypeError):
             pass
 
-        print(f"Warning: Could not parse score for {persona['id']}, using fallback: 50")
-        return 50
+        print(f"Warning: Could not parse score for {persona['id']}, using fallback: 0")
+        return 0
 
     # ------------------------------------------------------------------
     # Legacy vote parsing (for Vote 0 backward compat)
@@ -393,20 +457,20 @@ Journal entry:"""
 
         try:
             vote_data = parse_json_response(response)
-            score = vote_data.get("score", 50)
+            score = vote_data.get("score", 0)
             reasoning = vote_data.get("reasoning", vote_data.get("rationale", ""))
         except json.JSONDecodeError:
-            score_match = re.search(r'"?score"?\s*[:\s]+(\d+)', response, re.IGNORECASE)
+            score_match = re.search(r'"?score"?\s*[:\s]+(-?\d+)', response, re.IGNORECASE)
             if score_match:
                 score = int(score_match.group(1))
                 reasoning = response[:200]
             else:
-                number_match = re.search(r'\b(\d{1,3})\b', response)
-                score = int(number_match.group(1)) if number_match else 50
+                number_match = re.search(r'(?<!\d)-?\d{1,3}(?!\d)', response)
+                score = int(number_match.group(0)) if number_match else 0
                 reasoning = response[:200]
                 print(f"Warning: Could not parse vote JSON for {persona['id']}, using fallback score: {score}")
 
-        score = max(1, min(100, score))
+        score = max(-50, min(50, score))
 
         return {
             "voter_id": persona["id"],
@@ -444,6 +508,29 @@ Journal entry:"""
         crowd_opinion = context.current_state.get("crowd_opinion", {})
         voters = crowd_opinion.get("voters", [])
         return {v["voter_id"]: v for v in voters}
+
+    def _load_persisted_personas(self) -> Optional[List[Dict[str, Any]]]:
+        """
+        Load personas from debate storage so resumed runs keep the same voters.
+        """
+        try:
+            personas_data = self.file_manager._read_json("personas")
+            personas = personas_data.get("personas", [])
+            if personas:
+                return personas
+        except Exception:
+            pass
+
+        # Backward compatibility: older debates may only have personas in crowd_opinion.
+        try:
+            crowd_data = self.file_manager._read_json("crowd_opinion")
+            personas = crowd_data.get("personas", [])
+            if personas:
+                return personas
+        except Exception:
+            pass
+
+        return None
 
     # ------------------------------------------------------------------
     # Default persona generation (fallback if moderator doesn't provide)

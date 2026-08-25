@@ -42,45 +42,6 @@ class CostBudget:
     
     # Fallback thresholds
     use_quick_search_threshold: float = 1.0  # Switch to quick search if budget low
-    
-    @classmethod
-    def conservative(cls) -> "CostBudget":
-        """Conservative budget - prioritize cost savings."""
-        return cls(
-            max_cost_per_research=0.50,
-            max_grounding_queries=10,
-            max_context_tokens=100000,
-            max_output_tokens=8000,
-            max_research_time=180,  # 3 minutes
-            max_cost_per_debate=2.0,
-            max_deep_research_calls=2  # Opening only
-        )
-    
-    @classmethod
-    def balanced(cls) -> "CostBudget":
-        """Balanced budget - good quality at reasonable cost."""
-        return cls(
-            max_cost_per_research=2.0,
-            max_grounding_queries=20,
-            max_context_tokens=180000,
-            max_output_tokens=15000,
-            max_research_time=300,  # 5 minutes
-            max_cost_per_debate=5.0,
-            max_deep_research_calls=4  # Opening + 1 rebuttal round
-        )
-    
-    @classmethod
-    def premium(cls) -> "CostBudget":
-        """Premium budget - prioritize quality."""
-        return cls(
-            max_cost_per_research=5.0,
-            max_grounding_queries=40,
-            max_context_tokens=300000,
-            max_output_tokens=30000,
-            max_research_time=600,  # 10 minutes
-            max_cost_per_debate=15.0,
-            max_deep_research_calls=6  # Opening + all rebuttals
-        )
 
 
 class CostTracker:

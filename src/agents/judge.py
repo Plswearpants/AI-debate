@@ -1,7 +1,7 @@
 """
 Judge Agent - Neutral analysis and disagreement frontier mapping.
 
-Uses: Claude (config.claude_model; often Claude 3.5 Sonnet)
+Uses: Judge model (config.judge_model; often Claude 3.5 Sonnet)
 Responsibilities:
 - Analyze debate transcript neutrally
 - Identify consensus points (where both sides agree)
@@ -50,14 +50,14 @@ class JudgeAgent(Agent):
             )
             self.claude = create_claude_adapter(
                 openrouter_client,
-                config.claude_model,
+                config.judge_model,
                 agent_name="judge"
             )
         elif config.claude_api_key:
             # Use direct Claude API
             self.claude = ClaudeClient(
                 api_key=config.claude_api_key,
-                model=config.claude_model
+                model=config.judge_model
             )
         else:
             raise ValueError("Judge requires either OPENROUTER_API_KEY or CLAUDE_API_KEY")
@@ -116,7 +116,7 @@ class JudgeAgent(Agent):
         response = await self.claude.generate(
             prompt=user_prompt,
             system=system_prompt,
-            temperature=self.config.claude_temperature,
+            temperature=self.config.judge_temperature,
             max_tokens=self.config.max_tokens_judge
         )
 
@@ -258,26 +258,49 @@ TOPIC: {context.topic}
 
 """
 
-        # Add debate transcript (public only, no team notes)
+        # Add compact transcript context: summarize old turns, include full current-round turns.
         public_transcript = context.current_state.get("history_chat", {}).get("public_transcript", [])
 
         if not public_transcript:
             prompt += "No statements yet. This is the initial analysis.\n"
         else:
-            # Identify current round number for highlighting new content
             current_round = context.round_number
-            prompt += f"DEBATE TRANSCRIPT (Current Round: {current_round}):\n\n"
-            
+            current_round_turns = []
+            prior_turn_summaries = []
+
             for turn in public_transcript:
                 speaker = turn.get("speaker", "unknown")
-                statement = turn.get("statement", "")
                 round_label = turn.get("round_label", "")
                 turn_round = turn.get("round_number", 0)
-                
-                # Highlight statements from current round
+                statement = (turn.get("statement", "") or "").strip()
+
                 if turn_round == current_round:
-                    prompt += f"[{round_label}] Team {speaker} (CURRENT ROUND - NEW CONTENT):\n{statement}\n\n"
+                    current_round_turns.append((speaker, round_label, statement))
                 else:
+                    compact = statement.replace("\n", " ")
+                    prior_turn_summaries.append(
+                        f"[{round_label}] Team {speaker}: {compact[:220]}{'...' if len(compact) > 220 else ''}"
+                    )
+
+            prompt += f"TRANSCRIPT CONTEXT (Current Round: {current_round}):\n\n"
+
+            if prior_turn_summaries:
+                prompt += "PRIOR ROUNDS SUMMARY (compact context only):\n"
+                for line in prior_turn_summaries[-8:]:
+                    prompt += f"- {line}\n"
+                prompt += "\n"
+
+            if current_round_turns:
+                prompt += "CURRENT ROUND FULL CONTENT (analyze these in detail):\n\n"
+                for speaker, round_label, statement in current_round_turns:
+                    prompt += f"[{round_label}] Team {speaker} (CURRENT ROUND):\n{statement}\n\n"
+            else:
+                # Safety for phases where round labels may not match exactly.
+                prompt += "CURRENT ROUND FULL CONTENT unavailable by round tag; using the latest 2 turns:\n\n"
+                for turn in public_transcript[-2:]:
+                    speaker = turn.get("speaker", "unknown")
+                    round_label = turn.get("round_label", "")
+                    statement = (turn.get("statement", "") or "").strip()
                     prompt += f"[{round_label}] Team {speaker}:\n{statement}\n\n"
 
         # Add previous analysis if available (for context, but emphasize NEW content)

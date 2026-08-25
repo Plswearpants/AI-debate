@@ -14,6 +14,8 @@ Author: AI Debate Platform Team
 Date: January 2026
 """
 
+import asyncio
+
 import aiohttp
 from typing import Optional, Dict, Any, List
 
@@ -50,6 +52,9 @@ class OpenRouterClient:
         self.app_name = app_name
         self.raw_data_logger = raw_data_logger
         self._current_agent = None  # Set by adapters
+        # Keep crowd batch calls stable under transient provider hiccups.
+        self.batch_max_concurrency = 6
+        self.batch_max_retries = 2
         
         self._last_citations = []
         
@@ -188,32 +193,71 @@ class OpenRouterClient:
         Returns:
             List of generated texts
         """
-        import asyncio
-        
         # Temporarily disable individual logging during batch
         original_agent = self._current_agent
         self._current_agent = None  # Disable logging in generate()
-        
-        tasks = [
-            self.generate(p, model, temperature, max_tokens)
-            for p in prompts
-        ]
-        
-        results = await asyncio.gather(*tasks)
-        
-        # Restore agent context and log the batch call
-        self._current_agent = original_agent
-        if self.raw_data_logger and self._current_agent:
-            self.raw_data_logger.log_batch_call(
-                agent_name=self._current_agent,
-                model=model,
-                prompts=prompts,
-                responses=results,
-                temperature=temperature,
-                max_tokens=max_tokens
+
+        async def _generate_with_retry(
+            prompt: str,
+            index: int,
+            sem: asyncio.Semaphore
+        ) -> str:
+            last_error: Optional[Exception] = None
+            for attempt in range(self.batch_max_retries + 1):
+                try:
+                    async with sem:
+                        return await self.generate(
+                            prompt=prompt,
+                            model=model,
+                            temperature=temperature,
+                            max_tokens=max_tokens
+                        )
+                except Exception as e:
+                    last_error = e
+                    if attempt < self.batch_max_retries:
+                        await asyncio.sleep(0.5 * (attempt + 1))
+                        continue
+            raise RuntimeError(
+                f"batch item {index} failed after {self.batch_max_retries + 1} attempts: "
+                f"{type(last_error).__name__}: {last_error}"
             )
-        
-        return results
+
+        sem = asyncio.Semaphore(self.batch_max_concurrency)
+        tasks = [
+            _generate_with_retry(prompt, idx, sem)
+            for idx, prompt in enumerate(prompts)
+        ]
+
+        try:
+            raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+            failures = [
+                (idx, result) for idx, result in enumerate(raw_results)
+                if isinstance(result, Exception)
+            ]
+            if failures:
+                first_idx, first_err = failures[0]
+                raise RuntimeError(
+                    f"OpenRouter batch failed for {len(failures)}/{len(prompts)} prompts "
+                    f"(first failure at index {first_idx}: {first_err})"
+                )
+
+            results = [r for r in raw_results if isinstance(r, str)]
+
+            # Restore agent context and log the batch call
+            self._current_agent = original_agent
+            if self.raw_data_logger and self._current_agent:
+                self.raw_data_logger.log_batch_call(
+                    agent_name=self._current_agent,
+                    model=model,
+                    prompts=prompts,
+                    responses=results,
+                    temperature=temperature,
+                    max_tokens=max_tokens
+                )
+
+            return results
+        finally:
+            self._current_agent = original_agent
     
     async def health_check(self) -> Dict[str, str]:
         """
@@ -255,14 +299,19 @@ class OpenRouterClient:
 
 # Adapter functions for backward compatibility
 
-def create_gemini_adapter(openrouter_client: OpenRouterClient, model: str, perplexity_model: str = "perplexity/llama-3.1-sonar-small-128k-online", agent_name: str = "debator"):
+def create_gemini_adapter(
+    openrouter_client: OpenRouterClient,
+    model: str,
+    factchecker_model: str = "perplexity/llama-3.1-sonar-small-128k-online",
+    agent_name: str = "debator"
+):
     """
     Create a Gemini-compatible adapter using OpenRouter.
     
     Args:
         openrouter_client: OpenRouter client instance
         model: Gemini model ID (for regular generation)
-        perplexity_model: Perplexity model ID (for web search operations)
+        factchecker_model: Fact-checker model ID (for web search operations)
         agent_name: Name of the agent using this adapter (for logging)
     """
     
@@ -270,7 +319,7 @@ def create_gemini_adapter(openrouter_client: OpenRouterClient, model: str, perpl
         def __init__(self):
             self.client = openrouter_client
             self.model = model
-            self.perplexity_model = perplexity_model  # For web search
+            self.factchecker_model = factchecker_model  # For web search
             self.agent_name = agent_name
             self.last_research_citations = []  # Real URLs from Perplexity
         
@@ -327,7 +376,7 @@ def create_gemini_adapter(openrouter_client: OpenRouterClient, model: str, perpl
             # Use Perplexity model with web search (from config)
             result = await self.client.generate_with_search(
                 prompt=prompt,
-                model=self.perplexity_model,
+                model=self.factchecker_model,
                 temperature=temperature,
                 max_tokens=max_tokens
             )
@@ -350,7 +399,7 @@ Include inline citations and a source list at the end."""
             
             result = await self.client.generate_with_search(
                 prompt=research_prompt,
-                model=self.perplexity_model,
+                model=self.factchecker_model,
                 temperature=0.7,
                 max_tokens=4096
             )

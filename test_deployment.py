@@ -34,8 +34,8 @@ async def test_configuration():
     print_section("1. Testing Configuration")
     
     try:
-        config = Config.from_env()
-        print("✅ Configuration loaded from .env")
+        config = Config.from_files()
+        print("✅ Configuration loaded from .env + config.yaml")
         
         config.validate()
         print("✅ Configuration validated")
@@ -48,7 +48,8 @@ async def test_configuration():
         print(f"\n   Settings:")
         print(f"   - Debate rounds: {config.num_debate_rounds}")
         print(f"   - Crowd size: {config.crowd_size}")
-        print(f"   - Cost preset: {config.cost_budget_preset}")
+        if config.cost_budget:
+            print(f"   - Debate budget cap: ${config.cost_budget.max_cost_per_debate:.2f}")
         
         return config
         

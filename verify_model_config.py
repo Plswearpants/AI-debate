@@ -1,17 +1,7 @@
 """
-Verify Model Configuration - Check that all agents use models from .env, not hardcoded values.
-
-This script validates:
-- Config loads models from .env correctly
-- Agents use config models, not hardcoded values
-- No hardcoded model IDs in adapter classes
-
-Usage:
-    python verify_model_config.py
+Verify Model Configuration - Check that all agents use config.yaml models.
 """
 
-import os
-from dotenv import load_dotenv
 from src.config import Config
 
 def main():
@@ -20,16 +10,15 @@ def main():
     print("MODEL CONFIGURATION VERIFICATION")
     print("="*80)
     
-    # Load config from .env
-    load_dotenv()
-    config = Config.from_env()
+    # Load config from .env + config.yaml
+    config = Config.from_files()
     
-    print("\nCONFIGURED MODELS (from .env):")
+    print("\nCONFIGURED MODELS (from config.yaml):")
     print("-" * 80)
-    print(f"  GEMINI_MODEL:      {config.gemini_model}")
-    print(f"  CLAUDE_MODEL:      {config.claude_model}")
-    print(f"  PERPLEXITY_MODEL:  {config.perplexity_model}")
-    print(f"  LAMBDA_MODEL:      {config.lambda_model}")
+    print(f"  DEBATOR_MODEL:      {config.debator_model}")
+    print(f"  JUDGE_MODEL:        {config.judge_model}")
+    print(f"  FACTCHECKER_MODEL:  {config.factchecker_model}")
+    print(f"  CROWD_MODEL:        {config.crowd_model}")
     
     print("\nAGENT MODEL USAGE:")
     print("-" * 80)
@@ -37,15 +26,15 @@ def main():
     # Check what models agents will use
     if config.openrouter_api_key:
         print("  Using OpenRouter:")
-        print(f"    - Debator:      {config.gemini_model} (+ {config.perplexity_model} for web search)")
-        print(f"    - Judge:        {config.claude_model}")
-        print(f"    - FactChecker:  {config.perplexity_model}")
-        print(f"    - Crowd:        {config.lambda_model}")
+        print(f"    - Debator:      {config.debator_model} (+ {config.factchecker_model} for web search)")
+        print(f"    - Judge:        {config.judge_model}")
+        print(f"    - FactChecker:  {config.factchecker_model}")
+        print(f"    - Crowd:        {config.crowd_model}")
     else:
         print("  Using Direct APIs:")
-        print(f"    - Debator:      {config.gemini_model} (via Gemini API)")
-        print(f"    - Judge:        {config.claude_model} (via Claude API)")
-        print(f"    - FactChecker:  {config.perplexity_model} (via Perplexity API)")
+        print(f"    - Debator:      {config.debator_model} (via Gemini API)")
+        print(f"    - Judge:        {config.judge_model} (via Claude API)")
+        print(f"    - FactChecker:  {config.factchecker_model} (via Perplexity API)")
         print(f"    - Crowd:        Lambda GPU endpoint")
     
     print("\nVERIFICATION:")
@@ -57,21 +46,21 @@ def main():
     # Check if models look like valid OpenRouter IDs
     if config.openrouter_api_key:
         models_to_check = [
-            ("GEMINI_MODEL", config.gemini_model),
-            ("CLAUDE_MODEL", config.claude_model),
-            ("PERPLEXITY_MODEL", config.perplexity_model),
-            ("LAMBDA_MODEL", config.lambda_model)
+            ("DEBATOR_MODEL", config.debator_model),
+            ("JUDGE_MODEL", config.judge_model),
+            ("FACTCHECKER_MODEL", config.factchecker_model),
+            ("CROWD_MODEL", config.crowd_model)
         ]
         
         for name, model_id in models_to_check:
             if "/" not in model_id:
-                issues.append(f"  ⚠️  {name}={model_id} doesn't look like an OpenRouter model ID")
+                issues.append(f"  [WARN] {name}={model_id} doesn't look like an OpenRouter model ID")
                 issues.append(f"     Expected format: provider/model-name (e.g., google/gemini-2.0-flash-exp:free)")
     
     # Check if perplexity model is used for web search
     if config.openrouter_api_key:
-        if "perplexity" not in config.perplexity_model.lower():
-            issues.append(f"  ⚠️  PERPLEXITY_MODEL={config.perplexity_model} is not a Perplexity model")
+        if "perplexity" not in config.factchecker_model.lower():
+            issues.append(f"  [WARN] FACTCHECKER_MODEL={config.factchecker_model} is not a Perplexity model")
             issues.append(f"     Web search operations require Perplexity models with online search")
     
     if issues:
@@ -81,11 +70,12 @@ def main():
     else:
         print("  [OK] All models configured correctly!")
         print("  [OK] No hardcoded model IDs detected!")
-        print("  [OK] Agents will use models from .env configuration!")
+        print("  [OK] Agents will use models from config.yaml configuration!")
     
     print("\nTIPS:")
     print("-" * 80)
-    print("  - Update models in .env file, not in code")
+    print("  - Update API keys in .env file")
+    print("  - Update models and runtime settings in config.yaml")
     print("  - Use OpenRouter model IDs with format: provider/model-name")
     print("  - Perplexity models needed for web search (debator fallback, factchecker)")
     print("  - Run test_openrouter.py to verify models are accessible")

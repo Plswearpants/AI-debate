@@ -123,7 +123,7 @@ class TestVotingPrompt:
         assert "Should we implement UBI?" in prompt
         assert "UBI reduces poverty" in prompt or "Team a" in prompt
         assert "score" in prompt.lower()
-        assert "0-100" in prompt
+        assert "-50" in prompt or "50" in prompt
     
     def test_build_vote_zero_prompt(self, crowd_agent):
         """Test building Vote 0 prompt (stance preference)."""
@@ -158,35 +158,35 @@ class TestVoteParsing:
     
     def test_parse_vote_from_json(self, crowd_agent):
         """Test parsing valid JSON vote."""
-        response = '{"score": 75, "reasoning": "Strong economic evidence"}'
+        response = '{"score": 35, "reasoning": "Strong economic evidence"}'
         persona = {"id": "v_001", "name": "Test Persona"}
         
         vote = crowd_agent._parse_vote(response, persona)
         
         assert vote["voter_id"] == "v_001"
         assert vote["persona"] == "Test Persona"
-        assert vote["score"] == 75
+        assert vote["score"] == 35
         assert "economic" in vote["reasoning"].lower()
     
     def test_parse_vote_fallback(self, crowd_agent):
         """Test fallback parsing when JSON fails."""
-        response = "Score: 82. The arguments are convincing."
+        response = "Score: 32. The arguments are convincing."
         persona = {"id": "v_002", "name": "Test"}
         
         vote = crowd_agent._parse_vote(response, persona)
         
-        assert vote["score"] == 82
+        assert vote["score"] == 32
         assert "voter_id" in vote
     
     def test_parse_vote_clamps_score(self, crowd_agent):
-        """Test that scores are clamped to 0-100 range."""
+        """Test that scores are clamped to -50..50 range."""
         response = '{"score": 150}'
         persona = {"id": "v_003", "name": "Test"}
         
         vote = crowd_agent._parse_vote(response, persona)
         
-        assert 0 <= vote["score"] <= 100
-        assert vote["score"] == 100  # Clamped from 150
+        assert -50 <= vote["score"] <= 50
+        assert vote["score"] == 50  # Clamped from 150
     
     def test_parse_vote_default_score(self, crowd_agent):
         """Test default score when parsing fails completely."""
@@ -195,8 +195,8 @@ class TestVoteParsing:
         
         vote = crowd_agent._parse_vote(response, persona)
         
-        # Should default to neutral (50)
-        assert vote["score"] == 50
+        # Should default to neutral (0)
+        assert vote["score"] == 0
 
 
 class TestCrowdUpdate:
@@ -260,7 +260,7 @@ class TestCrowdExecution:
         assert "votes" in response.output
         assert len(response.output["votes"]) == 10
         assert "average_score" in response.output
-        assert 0 <= response.output["average_score"] <= 100
+        assert -50 <= response.output["average_score"] <= 50
         assert len(response.file_updates) == 1
     
     async def test_execute_turn_handles_errors(self, crowd_agent):

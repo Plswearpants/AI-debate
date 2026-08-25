@@ -4,6 +4,7 @@
 python-dotenv==1.0.0
 pydantic==2.5.0
 aiofiles==23.2.1
+pyyaml==6.0.2
 
 # LLM API Clients
 google-genai==0.3.0  # Gemini API (new package)

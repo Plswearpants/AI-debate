@@ -3,13 +3,12 @@ Unit tests for Configuration.
 
 Tests cover:
 - Config creation
-- Environment variable loading
+- File-based loading (.env + config.yaml)
 - Validation
-- Test config preset
+- Test config helper
 """
 
 import pytest
-import os
 from src.config import Config
 
 
@@ -42,9 +41,10 @@ class TestConfigCreation:
         assert config.num_debate_rounds == 2
         assert config.crowd_size == 100
         assert config.resource_multiplier_threshold == 0.6
-        assert config.gemini_model == "gemini-1.5-pro"
-        assert config.claude_model == "claude-3-5-sonnet-20241022"
-        assert config.perplexity_model == "sonar-pro"
+        assert config.debator_model == "gemini-1.5-pro"
+        assert config.judge_model == "claude-3-5-sonnet-20241022"
+        assert config.factchecker_model == "sonar-pro"
+        assert config.crowd_context_mode == "full_transcript"
     
     def test_test_config_preset(self):
         """Test that test_config() returns valid test configuration."""
@@ -67,9 +67,9 @@ class TestConfigValidation:
     def test_validate_invalid_rounds(self):
         """Test that invalid num_debate_rounds raises error."""
         config = Config.test_config()
-        config.num_debate_rounds = 0
+        config.num_debate_rounds = -1
         
-        with pytest.raises(ValueError, match="num_debate_rounds must be at least 1"):
+        with pytest.raises(ValueError, match="num_debate_rounds must be at least 0"):
             config.validate()
     
     def test_validate_invalid_crowd_size(self):
@@ -91,38 +91,106 @@ class TestConfigValidation:
     def test_validate_invalid_temperature(self):
         """Test that invalid temperature raises error."""
         config = Config.test_config()
-        config.gemini_temperature = -0.5
+        config.debator_temperature = -0.5
         
-        with pytest.raises(ValueError, match="gemini_temperature"):
+        with pytest.raises(ValueError, match="debator_temperature"):
+            config.validate()
+
+    def test_validate_invalid_crowd_context_mode(self):
+        """Test that invalid crowd context mode raises error."""
+        config = Config.test_config()
+        config.crowd_context_mode = "invalid_mode"
+
+        with pytest.raises(ValueError, match="crowd_context_mode"):
             config.validate()
 
 
 class TestConfigFromEnv:
-    """Test loading config from environment variables."""
+    """Test loading config from .env + config.yaml."""
     
-    def test_from_env_missing_required_keys(self, monkeypatch):
-        """Test that missing required keys raises error."""
-        # Mock load_dotenv to do nothing (prevent loading from .env file)
-        monkeypatch.setattr("src.config.load_dotenv", lambda *args, **kwargs: None)
-        
-        # Clear all relevant env vars (both OpenRouter and Direct APIs)
+    def test_from_files_missing_required_keys(self, monkeypatch, tmp_path):
+        """Test that missing required API keys raises error."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "debate:\n"
+            "  num_rounds: 1\n"
+            "  crowd_size: 10\n"
+            "  resource_multiplier_threshold: 0.6\n"
+            "models:\n"
+            "  use_openrouter_for_crowd: true\n"
+            "  debator: \"google/gemini-2.5-flash\"\n"
+            "  judge: \"anthropic/claude-3.5-sonnet\"\n"
+            "  factchecker: \"perplexity/sonar\"\n"
+            "  crowd: \"meta-llama/llama-3.3-70b-instruct\"\n"
+            "generation:\n"
+            "  temperature: { debator: 0.7, judge: 0.3, factchecker: 0.2, crowd: 0.8 }\n"
+            "  max_tokens: { debator: 4096, judge: 2048, factchecker: 1024, crowd: 100, crowd_journal: 240 }\n"
+            "research:\n"
+            "  max_cost_per_research: 2.0\n"
+            "  max_grounding_queries: 20\n"
+            "  max_context_tokens: 180000\n"
+            "  max_output_tokens: 15000\n"
+            "  max_research_time: 300\n"
+            "  quick_search_threshold: 1.0\n"
+            "budget:\n"
+            "  max_cost_per_debate: 5.0\n"
+            "  max_deep_research_calls: 4\n"
+            "logging:\n"
+            "  level: \"INFO\"\n",
+            encoding="utf-8",
+        )
+
         for key in ["OPENROUTER_API_KEY", "GEMINI_API_KEY", "CLAUDE_API_KEY", "PERPLEXITY_API_KEY", "LAMBDA_GPU_ENDPOINT"]:
             monkeypatch.delenv(key, raising=False)
-        
+
+        env_file = tmp_path / ".env.empty"
+        env_file.write_text("", encoding="utf-8")
+
         with pytest.raises(ValueError, match="Missing API configuration"):
-            Config.from_env()
-    
-    def test_from_env_with_all_keys(self, monkeypatch):
-        """Test loading config when all keys are present."""
+            Config.from_files(env_path=str(env_file), config_path=str(config_file))
+
+    def test_from_files_with_all_keys(self, monkeypatch, tmp_path):
+        """Test loading config when keys + config file are present."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "debate:\n"
+            "  num_rounds: 3\n"
+            "  crowd_size: 50\n"
+            "  resource_multiplier_threshold: 0.6\n"
+            "models:\n"
+            "  use_openrouter_for_crowd: true\n"
+            "  debator: \"google/gemini-2.5-flash\"\n"
+            "  judge: \"anthropic/claude-3.5-sonnet\"\n"
+            "  factchecker: \"perplexity/sonar\"\n"
+            "  crowd: \"meta-llama/llama-3.3-70b-instruct\"\n"
+            "generation:\n"
+            "  temperature: { debator: 0.7, judge: 0.3, factchecker: 0.2, crowd: 0.8 }\n"
+            "  max_tokens: { debator: 4096, judge: 2048, factchecker: 1024, crowd: 100, crowd_journal: 240 }\n"
+            "research:\n"
+            "  max_cost_per_research: 2.0\n"
+            "  max_grounding_queries: 20\n"
+            "  max_context_tokens: 180000\n"
+            "  max_output_tokens: 15000\n"
+            "  max_research_time: 300\n"
+            "  quick_search_threshold: 1.0\n"
+            "budget:\n"
+            "  max_cost_per_debate: 5.0\n"
+            "  max_deep_research_calls: 4\n"
+            "logging:\n"
+            "  level: \"INFO\"\n",
+            encoding="utf-8",
+        )
+
         monkeypatch.setenv("GEMINI_API_KEY", "test_gemini")
         monkeypatch.setenv("CLAUDE_API_KEY", "test_claude")
         monkeypatch.setenv("PERPLEXITY_API_KEY", "test_perplexity")
         monkeypatch.setenv("LAMBDA_GPU_ENDPOINT", "http://test:8000")
-        monkeypatch.setenv("NUM_DEBATE_ROUNDS", "3")
-        monkeypatch.setenv("CROWD_SIZE", "50")
-        
-        config = Config.from_env()
-        
+
+        env_file = tmp_path / ".env.empty"
+        env_file.write_text("", encoding="utf-8")
+
+        config = Config.from_files(env_path=str(env_file), config_path=str(config_file))
+
         assert config.gemini_api_key == "test_gemini"
         assert config.claude_api_key == "test_claude"
         assert config.num_debate_rounds == 3

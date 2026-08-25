@@ -9,6 +9,7 @@ import asyncio
 import os
 from dotenv import load_dotenv
 from src.clients.openrouter_client import OpenRouterClient
+from src.config import Config
 
 
 def print_section(title: str):
@@ -35,25 +36,18 @@ async def test_openrouter():
     
     print(f"✅ API Key loaded: {api_key[:20]}...")
     
-    # Load model configurations from .env
-    print_section("Configuration from .env")
-    gemini_model = os.getenv("GEMINI_MODEL", "google/gemini-2.0-flash-exp:free")
-    claude_model = os.getenv("CLAUDE_MODEL", "anthropic/claude-3.5-sonnet")
-    perplexity_model = os.getenv("PERPLEXITY_MODEL", "perplexity/llama-3.1-sonar-large-128k-online")
-    lambda_model = os.getenv("LAMBDA_MODEL", "meta-llama/llama-3.1-8b-instruct:free")
+    # Load role-based model configuration from config.yaml
+    print_section("Configuration from config.yaml")
+    config = Config.from_files()
+    debator_model = config.debator_model
+    judge_model = config.judge_model
+    factchecker_model = config.factchecker_model
+    crowd_model = config.crowd_model
     
-    print(f"Debators (Gemini):      {gemini_model}")
-    print(f"Judge (Claude):         {claude_model}")
-    print(f"Fact-checkers (Pplx):   {perplexity_model}")
-    print(f"Crowd (Llama):          {lambda_model}")
-    
-    # Check if using defaults
-    if not os.getenv("GEMINI_MODEL"):
-        print("\n⚠️  Using default models. To customize, add to .env:")
-        print("   GEMINI_MODEL=your-preferred-model")
-        print("   CLAUDE_MODEL=your-preferred-model")
-        print("   PERPLEXITY_MODEL=your-preferred-model")
-        print("   LAMBDA_MODEL=your-preferred-model")
+    print(f"Debator model:      {debator_model}")
+    print(f"Judge model:        {judge_model}")
+    print(f"Fact-checker model: {factchecker_model}")
+    print(f"Crowd model:        {crowd_model}")
     
     # Initialize client
     client = OpenRouterClient(api_key=api_key)
@@ -90,12 +84,12 @@ async def test_openrouter():
     
     # Test 3: Gemini Model (for debators)
     print_section("3. Testing Gemini Model (Debators)")
-    print(f"Testing: {gemini_model}")
+    print(f"Testing: {debator_model}")
     
     try:
         response = await client.generate(
             prompt="In one sentence, explain what universal basic income is.",
-            model=gemini_model,
+            model=debator_model,
             temperature=0.7,
             max_tokens=100
         )
@@ -111,12 +105,12 @@ async def test_openrouter():
     
     # Test 4: Claude Model (for judge)
     print_section("4. Testing Claude Model (Judge)")
-    print(f"Testing: {claude_model}")
+    print(f"Testing: {judge_model}")
     
     try:
         response = await client.generate(
             prompt="In one sentence, what makes a good neutral judge?",
-            model=claude_model,
+            model=judge_model,
             temperature=0.3,
             max_tokens=100
         )
@@ -124,18 +118,18 @@ async def test_openrouter():
         print(f"   Response: {response[:100]}...")
     except Exception as e:
         print(f"❌ Claude test failed: {e}")
-        print(f"\nTry using free alternative:")
-        print(f"   CLAUDE_MODEL=anthropic/claude-3-haiku")
+        print("\nTry using a different judge model in config.yaml:")
+        print("   models.judge: anthropic/claude-3-haiku")
         return False
     
     # Test 5: Perplexity Model (for fact-checkers)
     print_section("5. Testing Perplexity Model (Fact-Checkers)")
-    print(f"Testing: {perplexity_model}")
+    print(f"Testing: {factchecker_model}")
     
     try:
         response = await client.generate_with_search(
             prompt="What is the current population of the United States? Be specific.",
-            model=perplexity_model,
+            model=factchecker_model,
             temperature=0.2,
             max_tokens=100
         )
@@ -143,19 +137,19 @@ async def test_openrouter():
         print(f"   Response: {response[:100]}...")
     except Exception as e:
         print(f"❌ Perplexity test failed: {e}")
-        print(f"\nTry using alternative:")
-        print(f"   PERPLEXITY_MODEL=perplexity/llama-3.1-sonar-small-128k-online")
+        print("\nTry using a different fact-checker model in config.yaml:")
+        print("   models.factchecker: perplexity/llama-3.1-sonar-small-128k-online")
         return False
     
     # Test 6: Llama Model (for crowd)
     print_section("6. Testing Llama Model (Crowd)")
-    print(f"Testing: {lambda_model}")
+    print(f"Testing: {crowd_model}")
     
     try:
         # Test single generation
         response = await client.generate(
             prompt="Rate this debate argument from 0-100: 'UBI would reduce poverty.' Your score:",
-            model=lambda_model,
+            model=crowd_model,
             temperature=0.8,
             max_tokens=50
         )
@@ -172,7 +166,7 @@ async def test_openrouter():
         
         responses = await client.generate_batch(
             prompts=batch_prompts,
-            model=lambda_model,
+            model=crowd_model,
             temperature=0.8,
             max_tokens=20
         )
@@ -192,7 +186,7 @@ async def test_openrouter():
     try:
         response = await client.generate(
             prompt="Generate a JSON with keys 'argument' and 'score'. Argument about UBI, score 1-10.",
-            model=gemini_model,
+            model=debator_model,
             temperature=0.7,
             max_tokens=100,
             response_format={"type": "json_object"}

@@ -94,7 +94,7 @@ class Agent(ABC):
         state = {}
         
         # Try to read each file type
-        file_types = ["history_chat", "citation_pool", "debate_latent", "crowd_opinion"]
+        file_types = ["history_chat", "citation_pool", "debate_latent", "crowd_opinion", "personas"]
         
         for file_type in file_types:
             try:

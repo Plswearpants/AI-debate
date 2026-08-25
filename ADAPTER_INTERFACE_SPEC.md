@@ -11,8 +11,8 @@ All adapters wrap `OpenRouterClient` to provide backward compatibility with exis
 ## GeminiAdapter (Debator Agent)
 
 **Used by**: `DebatorAgent`  
-**Model**: Configured via `GEMINI_MODEL` (e.g., `google/gemini-2.0-flash-exp:free`)  
-**Perplexity Model**: Configured via `PERPLEXITY_MODEL` for web search operations
+**Model**: Configured via `models.debator` in `config.yaml` (e.g., `google/gemini-2.0-flash-exp:free`)  
+**Research/Web Model**: Configured via `models.factchecker` in `config.yaml` for web search operations
 
 ### Methods
 
@@ -75,7 +75,7 @@ Simulate deep research using web search.
 ## ClaudeAdapter (Judge Agent)
 
 **Used by**: `JudgeAgent`  
-**Model**: Configured via `CLAUDE_MODEL` (e.g., `anthropic/claude-3.5-sonnet:free`)
+**Model**: Configured via `models.judge` in `config.yaml` (e.g., `anthropic/claude-3.5-sonnet:free`)
 
 ### Methods
 
@@ -101,7 +101,7 @@ Generate text with the Claude model.
 ## PerplexityAdapter (FactChecker Agent)
 
 **Used by**: `FactCheckerAgent`  
-**Model**: Configured via `PERPLEXITY_MODEL` (e.g., `perplexity/llama-3.1-sonar-small-128k-online`)
+**Model**: Configured via `models.factchecker` in `config.yaml` (e.g., `perplexity/llama-3.1-sonar-small-128k-online`)
 
 ### Methods
 
@@ -140,7 +140,7 @@ Verify a claim against a source using web search.
 ## LambdaAdapter (Crowd Agent)
 
 **Used by**: `CrowdAgent`  
-**Model**: Configured via `LAMBDA_MODEL` (e.g., `meta-llama/llama-3.1-8b-instruct:free`)
+**Model**: Configured via `models.crowd` in `config.yaml` (e.g., `meta-llama/llama-3.1-8b-instruct:free`)
 
 ### Methods
 

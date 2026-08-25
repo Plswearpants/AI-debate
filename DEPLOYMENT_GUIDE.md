@@ -46,7 +46,6 @@ Continue reading below for direct API setup instructions.
 # 1. Get API key from https://openrouter.ai/keys
 # 2. Create .env file:
 OPENROUTER_API_KEY=sk-or-v1-your-key-here
-USE_OPENROUTER_FOR_CROWD=true
 
 # 3. Test it:
 python test_openrouter.py
@@ -94,18 +93,20 @@ python run_debate.py "Your topic"
    - Sign up and add $10-20 credits
    - Copy API key from [Keys page](https://openrouter.ai/keys)
 
-2. **Create `.env`** (2 min)
+2. **Create `.env` + `config.yaml`** (2 min)
    ```bash
+   # .env (keys only)
    OPENROUTER_API_KEY=sk-or-v1-your-key-here
-   
-   # Model selection (optional, these are defaults)
-   GEMINI_MODEL=google/gemini-2.0-flash-exp:free
-   CLAUDE_MODEL=anthropic/claude-3.5-sonnet
-   PERPLEXITY_MODEL=perplexity/llama-3.1-sonar-large-128k-online
-   LAMBDA_MODEL=meta-llama/llama-3.1-8b-instruct:free
-   
-   USE_OPENROUTER_FOR_CROWD=true
-   NUM_DEBATE_ROUNDS=2
+
+   # config.yaml (runtime settings)
+   models:
+     debator: google/gemini-2.0-flash-exp:free
+     judge: anthropic/claude-3.5-sonnet
+     factchecker: perplexity/llama-3.1-sonar-large-128k-online
+     crowd: meta-llama/llama-3.1-8b-instruct:free
+     use_openrouter_for_crowd: true
+   debate:
+     num_rounds: 2
    ```
 
 3. **Test Setup** (5 min)
@@ -270,23 +271,22 @@ Create `.env` in project root:
 ```bash
 # OpenRouter API Key (replaces Gemini, Claude, Perplexity)
 OPENROUTER_API_KEY=sk-or-v1-your-key-here
+```
 
-# Use OpenRouter for crowd (no Lambda GPU needed)
-USE_OPENROUTER_FOR_CROWD=true
-
-# Model Selection (OpenRouter model IDs)
-GEMINI_MODEL=google/gemini-2.0-flash-exp:free
-CLAUDE_MODEL=anthropic/claude-3.5-sonnet
-PERPLEXITY_MODEL=perplexity/llama-3.1-sonar-large-128k-online
-LAMBDA_MODEL=meta-llama/llama-3.1-8b-instruct:free
-
-# Debate Settings
-NUM_DEBATE_ROUNDS=2
-CROWD_SIZE=100
-RESOURCE_MULTIPLIER_THRESHOLD=0.6
-
-# Cost Budget (optional)
-COST_BUDGET_PRESET=balanced
+```yaml
+# config.yaml
+models:
+  use_openrouter_for_crowd: true
+  debator: google/gemini-2.0-flash-exp:free
+  judge: anthropic/claude-3.5-sonnet
+  factchecker: perplexity/llama-3.1-sonar-large-128k-online
+  crowd: meta-llama/llama-3.1-8b-instruct:free
+debate:
+  num_rounds: 2
+  crowd_size: 100
+  resource_multiplier_threshold: 0.6
+budget:
+  max_cost_per_debate: 5.0
 ```
 
 **See**: Full model list at [OpenRouter Models](https://openrouter.ai/models)
@@ -304,26 +304,27 @@ PERPLEXITY_API_KEY=pplx-...your-key-here...
 # Lambda GPU Endpoint (optional)
 LAMBDA_GPU_ENDPOINT=http://your-lambda-ip:8000
 LAMBDA_GPU_API_KEY=optional-if-you-set-one
+```
 
-# Model Settings (Direct API model names)
-GEMINI_MODEL=gemini-1.5-pro
-CLAUDE_MODEL=claude-3-5-sonnet-20241022
-PERPLEXITY_MODEL=sonar-pro
-LAMBDA_MODEL=meta-llama/Llama-3.1-8B-Instruct
-
-# Debate Settings
-NUM_DEBATE_ROUNDS=2
-CROWD_SIZE=100
-RESOURCE_MULTIPLIER_THRESHOLD=0.6
-
-# Cost Budget (optional)
-COST_BUDGET_PRESET=balanced
-
-# Generation Settings
-GEMINI_TEMPERATURE=0.7
-CLAUDE_TEMPERATURE=0.3
-PERPLEXITY_TEMPERATURE=0.2
-CROWD_TEMPERATURE=0.8
+```yaml
+# config.yaml
+models:
+  debator: gemini-1.5-pro
+  judge: claude-3-5-sonnet-20241022
+  factchecker: sonar-pro
+  crowd: meta-llama/Llama-3.1-8B-Instruct
+debate:
+  num_rounds: 2
+  crowd_size: 100
+  resource_multiplier_threshold: 0.6
+generation:
+  temperature:
+    debator: 0.7
+    judge: 0.3
+    factchecker: 0.2
+    crowd: 0.8
+budget:
+  max_cost_per_debate: 5.0
 ```
 
 #### Option C: Hybrid (OpenRouter + Lambda GPU)
@@ -334,17 +335,19 @@ OPENROUTER_API_KEY=sk-or-v1-your-key-here
 
 # Lambda GPU for crowd (better batch performance)
 LAMBDA_GPU_ENDPOINT=http://your-lambda-ip:8000
-USE_OPENROUTER_FOR_CROWD=false
+```
 
-# Models
-GEMINI_MODEL=google/gemini-2.0-flash-exp:free
-CLAUDE_MODEL=anthropic/claude-3.5-sonnet
-PERPLEXITY_MODEL=perplexity/llama-3.1-sonar-large-128k-online
-LAMBDA_MODEL=meta-llama/Llama-3.1-8B-Instruct
-
-# Settings
-NUM_DEBATE_ROUNDS=2
-CROWD_SIZE=100
+```yaml
+# config.yaml
+models:
+  use_openrouter_for_crowd: false
+  debator: google/gemini-2.0-flash-exp:free
+  judge: anthropic/claude-3.5-sonnet
+  factchecker: perplexity/llama-3.1-sonar-large-128k-online
+  crowd: meta-llama/Llama-3.1-8B-Instruct
+debate:
+  num_rounds: 2
+  crowd_size: 100
 ```
 
 **Important**: Add `.env` to `.gitignore` if not already there!
@@ -407,7 +410,7 @@ python test_config.py
 ## 🖥️ Step 3: Deploy Lambda GPU Server (Optional)
 
 **Skip this step if**:
-- You're using OpenRouter with `USE_OPENROUTER_FOR_CROWD=true`
+- You're using OpenRouter with `models.use_openrouter_for_crowd: true`
 - You're using OpenAI/other hosted API for crowd
 
 **Only needed if**:
@@ -914,8 +917,9 @@ COST_BUDGET_PRESET=premium       # Max $15/debate
 ### Reduce Costs
 
 **Option 1**: Use fewer debate rounds
-```bash
-NUM_DEBATE_ROUNDS=1  # Instead of 2
+```yaml
+debate:
+  num_rounds: 1  # Instead of 2
 ```
 
 **Option 2**: Use cheaper models for crowd

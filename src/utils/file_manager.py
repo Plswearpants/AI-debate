@@ -23,43 +23,50 @@ PERMISSIONS = {
         "history_chat": ["public_transcript", "team_notes.a"],
         "citation_pool": ["team a", "team b"],
         "debate_latent": ["all"],
-        "crowd_opinion": []
+        "crowd_opinion": [],
+        "personas": []
     },
     "debator_b": {
         "history_chat": ["public_transcript", "team_notes.b"],
         "citation_pool": ["team a", "team b"],
         "debate_latent": ["all"],
-        "crowd_opinion": []
+        "crowd_opinion": [],
+        "personas": []
     },
     "factchecker_a": {
         "history_chat": ["public_transcript", "team_notes.a"],
         "citation_pool": ["team a", "team b"],
         "debate_latent": ["all"],
-        "crowd_opinion": []
+        "crowd_opinion": [],
+        "personas": []
     },
     "factchecker_b": {
         "history_chat": ["public_transcript", "team_notes.b"],
         "citation_pool": ["team a", "team b"],
         "debate_latent": ["all"],
-        "crowd_opinion": []
+        "crowd_opinion": [],
+        "personas": []
     },
     "judge": {
         "history_chat": ["public_transcript"],
         "citation_pool": ["team a", "team b"],
         "debate_latent": ["all"],
-        "crowd_opinion": []
+        "crowd_opinion": [],
+        "personas": []
     },
     "crowd": {
         "history_chat": ["public_transcript"],
         "citation_pool": [],
         "debate_latent": ["all"],
-        "crowd_opinion": ["all"]
+        "crowd_opinion": ["all"],
+        "personas": ["all"]
     },
     "moderator": {
         "history_chat": ["all"],
         "citation_pool": ["all"],
         "debate_latent": ["all"],
-        "crowd_opinion": ["all"]
+        "crowd_opinion": ["all"],
+        "personas": ["all"]
     }
 }
 
@@ -86,7 +93,8 @@ class FileManager:
             "history_chat": self.debate_dir / "history_chat.json",
             "citation_pool": self.debate_dir / "citation_pool.json",
             "debate_latent": self.debate_dir / "debate_latent.json",
-            "crowd_opinion": self.debate_dir / "crowd_opinion.json"
+            "crowd_opinion": self.debate_dir / "crowd_opinion.json",
+            "personas": self.debate_dir / "personas.json"
         }
     
     def initialize_files(self, debate_id: str, topic: str) -> None:
@@ -138,6 +146,14 @@ class FileManager:
             "voters": []
         }
         self.write_by_moderator("crowd_opinion", crowd_opinion)
+
+        # Initialize personas.json
+        personas = {
+            "debate_id": debate_id,
+            "created_at": datetime.now().isoformat(),
+            "personas": []
+        }
+        self.write_by_moderator("personas", personas)
     
     def read_for_agent(self, agent_name: str, file_type: str) -> Dict[str, Any]:
         """
@@ -212,6 +228,15 @@ class FileManager:
             if team_key not in data["team_notes"]:
                 data["team_notes"][team_key] = []
             data["team_notes"][team_key].append(turn_data)
+
+        # Keep metadata in sync with latest persisted turn.
+        metadata = data.setdefault("metadata", {})
+        round_number = turn_data.get("round_number", turn_data.get("round"))
+        if round_number is not None:
+            metadata["current_round"] = round_number
+        phase = turn_data.get("phase")
+        if phase:
+            metadata["phase"] = phase
         
         self._write_json("history_chat", data)
     
